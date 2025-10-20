@@ -1,0 +1,505 @@
+#Requires -Module Microsoft.Graph.Identity.Governance
+
+<#
+  EFP013
+.SYNOPSIS
+    Configura los settings de los roles de PIM para Entra ID con controles de seguridad avanzados.
+.DESCRIPTION
+    Este script obtiene el estado actual, aplica los nuevos cambios con validaciones de seguridad,
+    manejo de throttling, modo dry-run y genera reportes de auditoría detallados.
+.PARAMETER CsvPath
+    Ruta al archivo CSV que contiene la configuración de los roles.
+.PARAMETER DryRun
+    Modo simulación - muestra los cambios sin aplicarlos.
+.PARAMETER Force
+    Omite confirmaciones interactivas para cambios críticos.
+.PARAMETER LogPath
+    Ruta personalizada para los archivos de log y auditoría.
+.EXAMPLE
+    .\PIM-PolicyConfiguration.ps1 -CsvPath "politicas.csv" -DryRun
+    .\PIM-PolicyConfiguration.ps1 -CsvPath "politicas.csv" -Force
+#>
+
+param (
+    [Parameter(Mandatory = $true)]
+    [string]$CsvPath,
+    
+    [switch]$DryRun,
+    [switch]$Force,
+    
+    [string]$LogPath = ".\PIM-Policy-Logs"
+)
+
+# --- CONFIGURACIÓN GLOBAL ---
+$script:ConfigurableRoles = @(
+    'Global Administrator',
+    'Privileged Role Administrator', 
+    'Security Administrator',
+    'Exchange Administrator',
+    'SharePoint Administrator',
+    'User Administrator',
+    'Helpdesk Administrator',
+    'Service Support Administrator',
+    'Billing Administrator',
+    'License Administrator',
+    'Directory Readers'
+)
+
+# Roles críticos que requieren aprobación y MFA obligatoria
+$script:CriticalRoles = @(
+    'Global Administrator',
+    'Privileged Role Administrator',
+    'Security Administrator'
+)
+
+# Variables de auditoría
+$script:AuditLog = @()
+$script:Statistics = @{
+    Total = 0
+    Success = 0
+    Failed = 0
+    Skipped = 0
+    UnauthorizedChanges = 0
+}
+
+# --- FUNCIONES DE UTILIDAD ---
+
+function Invoke-WithRetry {
+    <#
+    .SYNOPSIS
+        Ejecuta comando con reintentos exponenciales ante throttling
+    #>
+    [CmdletBinding()]
+    param(
+        [scriptblock]$ScriptBlock,
+        [int]$MaxRetries = 3,
+        [int]$BaseDelaySeconds = 2
+    )
+    
+    $attempt = 0
+    while ($attempt -lt $MaxRetries) {
+        try {
+            return & $ScriptBlock
+        }
+        catch {
+            if ($_.Exception.Message -match '429|TooManyRequests|throttl') {
+                $attempt++
+                if ($attempt -ge $MaxRetries) {
+                    throw "Falló después de $MaxRetries intentos por throttling: $_"
+                }
+                
+                $delay = $BaseDelaySeconds * [Math]::Pow(2, $attempt)
+                Write-Warning "Throttling detectado. Reintento $attempt/$MaxRetries en $delay segundos..."
+                Start-Sleep -Seconds $delay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
+
+function Test-RoleConfigurable {
+    <#
+    .SYNOPSIS
+        Verifica si un rol está en la lista blanca de roles configurables
+    #>
+    [CmdletBinding()]
+    param([string]$RoleDisplayName)
+    
+    if ($RoleDisplayName -notin $script:ConfigurableRoles) {
+        Write-Warning "ROL NO CONFIGURABLE: '$RoleDisplayName' no está en la lista blanca de roles configurables"
+        return $false
+    }
+    return $true
+}
+
+function Test-UnauthorizedChanges {
+    <#
+    .SYNOPSIS
+        Detecta intentos de reducir controles de seguridad en roles críticos
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$RoleDisplayName,
+        [bool]$CurrentMfa,
+        [bool]$ProposedMfa,
+        [bool]$CurrentApproval,
+        [bool]$ProposedApproval,
+        [string]$CurrentDuration,
+        [string]$ProposedDuration
+    )
+    
+    $unauthorizedChanges = @()
+    
+    # Verificar solo para roles críticos
+    if ($RoleDisplayName -in $script:CriticalRoles) {
+        
+        # No permitir desactivar MFA en roles críticos
+        if ($CurrentMfa -and (-not $ProposedMfa)) {
+            $unauthorizedChanges += "Desactivar MFA en rol crítico"
+        }
+        
+        # No permitir desactivar aprobación en roles críticos
+        if ($CurrentApproval -and (-not $ProposedApproval)) {
+            $unauthorizedChanges += "Desactivar aprobación en rol crítico"
+        }
+        
+        # No permitir aumentar duración más allá de límites seguros
+        if ($CurrentDuration -and $ProposedDuration) {
+            $currentTime = [System.Xml.XmlConvert]::ToTimeSpan($CurrentDuration)
+            $proposedTime = [System.Xml.XmlConvert]::ToTimeSpan($ProposedDuration)
+            
+            # Alertar si se aumenta significativamente la duración
+            if ($proposedTime -gt $currentTime -and $proposedTime.TotalHours -gt 24) {
+                $unauthorizedChanges += "Aumentar duración beyond 24 horas en rol crítico"
+            }
+        }
+    }
+    
+    return $unauthorizedChanges
+}
+
+function Add-AuditEntry {
+    <#
+    .SYNOPSIS
+        Registra evento en el log de auditoría
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$RoleDisplayName,
+        [string]$Action,
+        [string]$Status,
+        [string]$Details = '',
+        [hashtable]$BeforeState = $null,
+        [hashtable]$AfterState = $null
+    )
+    
+    $script:AuditLog += [PSCustomObject]@{
+        Timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss.fffZ"
+        RoleDisplayName = $RoleDisplayName
+        Action = $Action
+        Status = $Status
+        Details = $Details
+        BeforeState = if ($BeforeState) { ($BeforeState | ConvertTo-Json -Compress) } else { '' }
+        AfterState = if ($AfterState) { ($AfterState | ConvertTo-Json -Compress) } else { '' }
+        ExecutedBy = (Get-MgContext).Account
+        DryRun = $DryRun.IsPresent
+    }
+}
+
+function Export-AuditReport {
+    <#
+    .SYNOPSIS
+        Exporta reportes de auditoría detallados
+    #>
+    [CmdletBinding()]
+    param()
+    
+    # Crear directorio de logs si no existe
+    if (-not (Test-Path $LogPath)) {
+        New-Item -ItemType Directory -Path $LogPath -Force | Out-Null
+    }
+    
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    
+    # Exportar CSV detallado
+    $csvFile = Join-Path $LogPath "PIM-Policy-Audit_$timestamp.csv"
+    $script:AuditLog | Select-Object Timestamp, RoleDisplayName, Action, Status, Details, ExecutedBy, DryRun | 
+        Export-Csv -Path $csvFile -NoTypeInformation -Encoding UTF8
+    
+    # Exportar JSON completo
+    $jsonFile = Join-Path $LogPath "PIM-Policy-Audit_$timestamp.json"
+    $auditData = @{
+        Metadata = @{
+            Timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ss.fffZ"
+            ExecutedBy = (Get-MgContext).Account
+            DryRun = $DryRun.IsPresent
+            CsvPath = $CsvPath
+        }
+        Statistics = $script:Statistics
+        Entries = $script:AuditLog
+    }
+    $auditData | ConvertTo-Json -Depth 5 | Out-File $jsonFile -Encoding UTF8
+    
+    # Mostrar resumen
+    Write-Host "`n=== RESUMEN DE EJECUCIÓN ===" -ForegroundColor Cyan
+    Write-Host "Total procesado:  $($script:Statistics.Total)" -ForegroundColor White
+    Write-Host "Exitoso:          $($script:Statistics.Success)" -ForegroundColor Green
+    Write-Host "Fallido:          $($script:Statistics.Failed)" -ForegroundColor Red
+    Write-Host "Omitido:          $($script:Statistics.Skipped)" -ForegroundColor Yellow
+    Write-Host "Cambios no autorizados: $($script:Statistics.UnauthorizedChanges)" -ForegroundColor Magenta
+    
+    Write-Host "`nReportes generados:" -ForegroundColor Cyan
+    Write-Host "✓ CSV detallado: $csvFile" -ForegroundColor Green
+    Write-Host "✓ JSON completo: $jsonFile" -ForegroundColor Green
+}
+
+function Show-ConfigurationSummary {
+    <#
+    .SYNOPSIS
+        Muestra resumen de configuración antes de ejecutar
+    #>
+    [CmdletBinding()]
+    param([array]$CsvData)
+    
+    Write-Host "`n" + "="*80 -ForegroundColor Cyan
+    Write-Host "           RESUMEN DE CONFIGURACIÓN PIM" -ForegroundColor Cyan
+    Write-Host "="*80 -ForegroundColor Cyan
+    Write-Host "📁 Archivo CSV: $CsvPath" -ForegroundColor White
+    Write-Host "🔢 Roles a procesar: $($CsvData.Count)" -ForegroundColor White
+    Write-Host "🧪 Modo DryRun: $(if($DryRun){'ACTIVADO'}else{'DESACTIVADO'})" -ForegroundColor White
+    Write-Host "⚡ Modo Force: $(if($Force){'ACTIVADO'}else{'DESACTIVADO'})" -ForegroundColor White
+    Write-Host "📊 Ruta de logs: $LogPath" -ForegroundColor White
+    Write-Host "⏱️  Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
+    
+    Write-Host "`nRoles críticos (controles estrictos):" -ForegroundColor Yellow
+    $script:CriticalRoles | ForEach-Object { Write-Host "  • $_" -ForegroundColor White }
+    
+    Write-Host "="*80 -ForegroundColor Cyan
+}
+
+# --- CONEXIÓN Y VALIDACIÓN ---
+
+Write-Host "`n╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║        CONFIGURACIÓN SEGURA DE POLÍTICAS PIM              ║" -ForegroundColor Cyan
+Write-Host "╚═══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+
+# Verificación e importación del módulo
+try {
+    Write-Host "Importando módulo Microsoft.Graph.Identity.Governance..." -ForegroundColor Yellow
+    Import-Module Microsoft.Graph.Identity.Governance -ErrorAction Stop
+    Write-Host "✓ Módulo importado correctamente." -ForegroundColor Green
+}
+catch {
+    Write-Error "No se pudo importar el módulo 'Microsoft.Graph.Identity.Governance'. Por favor, instálalo ejecutando: Install-Module Microsoft.Graph.Identity.Governance -Scope CurrentUser"
+    exit 1
+}
+
+# Conexión a Microsoft Graph
+Write-Host "Conectando a Microsoft Graph..." -ForegroundColor Yellow
+$requiredScopes = @("RoleManagement.ReadWrite.Directory", "RoleManagement.Read.Directory")
+try {
+    Connect-MgGraph -Scopes $requiredScopes -ErrorAction Stop
+    Write-Host "✓ Conectado a Microsoft Graph como: $((Get-MgContext).Account)" -ForegroundColor Green
+}
+catch {
+    Write-Error "No se pudo conectar a Microsoft Graph. Asegúrate de tener el módulo instalado y conexión a internet."
+    exit 1
+}
+
+# --- VALIDACIÓN DEL CSV ---
+if (-not (Test-Path $CsvPath)) {
+    Write-Error "El archivo CSV no se encontró en la ruta especificada: $CsvPath"
+    exit 1
+}
+
+try {
+    $roleSettingsFromCsv = Import-Csv -Path $CsvPath
+    Write-Host "✓ CSV cargado correctamente: $($roleSettingsFromCsv.Count) roles" -ForegroundColor Green
+}
+catch {
+    Write-Error "Error al cargar el CSV: $_"
+    exit 1
+}
+
+# Validar columnas requeridas
+$requiredColumns = @('RoleDisplayName', 'ActivationMaxDuration', 'RequireMfaOnActivation', 'RequireApproval')
+$csvHeaders = $roleSettingsFromCsv[0].PSObject.Properties.Name
+
+foreach ($col in $requiredColumns) {
+    if ($col -notin $csvHeaders) {
+        Write-Error "Falta columna requerida en CSV: $col"
+        exit 1
+    }
+}
+
+# Mostrar resumen de configuración
+Show-ConfigurationSummary -CsvData $roleSettingsFromCsv
+
+# Confirmación para modo producción
+if (-not $DryRun -and -not $Force) {
+    Write-Host "`n⚠️  ADVERTENCIA: Se aplicarán cambios en MODO PRODUCCIÓN" -ForegroundColor Red
+    $confirm = Read-Host "¿Continuar? (escriba 'SI' para confirmar)"
+    if ($confirm -ne 'SI') {
+        Write-Host "Operación cancelada por el usuario." -ForegroundColor Yellow
+        exit 0
+    }
+}
+
+# --- PROCESAMIENTO PRINCIPAL ---
+Write-Host "`nProcesando configuraciones de roles..." -ForegroundColor Cyan
+if ($DryRun) {
+    Write-Host "[MODO DRY-RUN ACTIVO - No se aplicarán cambios reales]" -ForegroundColor Yellow
+}
+
+$results = @()
+$progress = 0
+
+foreach ($row in $roleSettingsFromCsv) {
+    $progress++
+    $roleDisplayName = $row.RoleDisplayName
+    Write-Progress -Activity "Procesando políticas PIM" -Status "Rol $progress de $($roleSettingsFromCsv.Count): $roleDisplayName" -PercentComplete (($progress / $roleSettingsFromCsv.Count) * 100)
+    
+    Write-Host "`n[$progress/$($roleSettingsFromCsv.Count)] Procesando: $roleDisplayName" -ForegroundColor White
+    
+    $script:Statistics.Total++
+    
+    try {
+        # --- VALIDACIÓN INICIAL ---
+        if (-not (Test-RoleConfigurable -RoleDisplayName $roleDisplayName)) {
+            Write-Host "  → OMITIDO: Rol no configurable" -ForegroundColor Yellow
+            $script:Statistics.Skipped++
+            Add-AuditEntry -RoleDisplayName $roleDisplayName -Action "RoleNotConfigurable" -Status "Skipped" -Details "Rol no está en lista blanca"
+            continue
+        }
+        
+        # --- OBTENER CONFIGURACIÓN ACTUAL ---
+        $roleDefinition = Invoke-WithRetry -ScriptBlock {
+            Get-MgRoleManagementDirectoryRoleDefinition -Filter "DisplayName eq '$roleDisplayName'"
+        }
+        
+        if (-not $roleDefinition) {
+            Write-Host "  → ERROR: Rol no encontrado en el directorio" -ForegroundColor Red
+            $script:Statistics.Failed++
+            Add-AuditEntry -RoleDisplayName $roleDisplayName -Action "RoleNotFound" -Status "Failed" -Details "Rol no existe en Entra ID"
+            continue
+        }
+        
+        $roleDefinitionId = $roleDefinition.Id
+        
+        $currentSettings = Invoke-WithRetry -ScriptBlock {
+            Get-MgRoleManagementDirectoryRoleSetting -UnifiedRoleDefinitionId $roleDefinitionId
+        }
+        
+        $beforeState = @{
+            ActivationMaxDuration = $currentSettings.ActivationMaximumDuration
+            RequireJustification = $currentSettings.IsJustificationRequiredOnActivation
+            RequireMfa = $currentSettings.IsMfaOnActivationRequired
+            RequireApproval = $currentSettings.IsApprovalRequiredOnActivation
+            RequireTicketInfo = $currentSettings.IsTicketInfoRequiredOnActivation
+        }
+        
+        # --- PREPARAR NUEVA CONFIGURACIÓN ---
+        $proposedMfa = [System.Convert]::ToBoolean($row.RequireMfaOnActivation)
+        $proposedApproval = [System.Convert]::ToBoolean($row.RequireApproval)
+        
+        # --- VALIDAR CAMBIOS NO AUTORIZADOS ---
+        $unauthorizedChanges = Test-UnauthorizedChanges -RoleDisplayName $roleDisplayName `
+            -CurrentMfa $beforeState.RequireMfa -ProposedMfa $proposedMfa `
+            -CurrentApproval $beforeState.RequireApproval -ProposedApproval $proposedApproval `
+            -CurrentDuration $beforeState.ActivationMaxDuration -ProposedDuration $row.ActivationMaxDuration
+        
+        if ($unauthorizedChanges.Count -gt 0) {
+            Write-Host "  → BLOQUEADO: Cambios no autorizados detectados:" -ForegroundColor Red
+            $unauthorizedChanges | ForEach-Object { Write-Host "    • $_" -ForegroundColor Red }
+            
+            $script:Statistics.UnauthorizedChanges++
+            Add-AuditEntry -RoleDisplayName $roleDisplayName -Action "UnauthorizedChanges" -Status "Blocked" `
+                -Details ($unauthorizedChanges -join "; ") -BeforeState $beforeState
+            continue
+        }
+        
+        # --- MODO DRY-RUN ---
+        if ($DryRun) {
+            Write-Host "  [DRY-RUN] Simulando actualización..." -ForegroundColor Cyan
+            Write-Host "    Duración: $($beforeState.ActivationMaxDuration) → $($row.ActivationMaxDuration)" -ForegroundColor Gray
+            Write-Host "    MFA: $($beforeState.RequireMfa) → $proposedMfa" -ForegroundColor Gray
+            Write-Host "    Aprobación: $($beforeState.RequireApproval) → $proposedApproval" -ForegroundColor Gray
+            
+            $script:Statistics.Success++
+            Add-AuditEntry -RoleDisplayName $roleDisplayName -Action "DryRunSimulated" -Status "Success" `
+                -Details "Cambios simulados" -BeforeState $beforeState
+            continue
+        }
+        
+        # --- APLICAR CONFIGURACIÓN REAL ---
+        $params = @{
+            UnifiedRoleDefinitionId = $roleDefinitionId
+            ActivationMaximumDuration = $row.ActivationMaxDuration
+            IsJustificationRequiredOnActivation = [System.Convert]::ToBoolean($row.RequireJustificationOnActivation)
+            IsMfaOnActivationRequired = $proposedMfa
+            IsApprovalRequiredOnActivation = $proposedApproval
+            IsTicketInfoRequiredOnActivation = [System.Convert]::ToBoolean($row.RequireTicketInfoOnActivation)
+        }
+        
+        Write-Host "  → Aplicando cambios..." -ForegroundColor Yellow
+        Invoke-WithRetry -ScriptBlock {
+            Update-MgRoleManagementDirectoryRoleSetting @params
+        }
+        
+        # --- VERIFICAR CONFIGURACIÓN ACTUALIZADA ---
+        $newSettings = Invoke-WithRetry -ScriptBlock {
+            Get-MgRoleManagementDirectoryRoleSetting -UnifiedRoleDefinitionId $roleDefinitionId
+        }
+        
+        $afterState = @{
+            ActivationMaxDuration = $newSettings.ActivationMaximumDuration
+            RequireJustification = $newSettings.IsJustificationRequiredOnActivation
+            RequireMfa = $newSettings.IsMfaOnActivationRequired
+            RequireApproval = $newSettings.IsApprovalRequiredOnActivation
+            RequireTicketInfo = $newSettings.IsTicketInfoRequiredOnActivation
+        }
+        
+        Write-Host "  ✓ Configuración actualizada exitosamente" -ForegroundColor Green
+        $script:Statistics.Success++
+        
+        Add-AuditEntry -RoleDisplayName $roleDisplayName -Action "PolicyUpdated" -Status "Success" `
+            -Details "Configuración aplicada exitosamente" -BeforeState $beforeState -AfterState $afterState
+        
+        # --- AGREGAR AL REPORTE DETALLADO ---
+        $results += [PSCustomObject]@{ 
+            Rol = $roleDisplayName; 
+            Propiedad = "Duración Máxima Activación"; 
+            Valor_Antes = $beforeState.ActivationMaxDuration; 
+            Valor_Despues = $afterState.ActivationMaxDuration; 
+            Modificado = -not ($beforeState.ActivationMaxDuration -eq $afterState.ActivationMaxDuration) 
+        }
+        $results += [PSCustomObject]@{ 
+            Rol = $roleDisplayName; 
+            Propiedad = "Requiere MFA"; 
+            Valor_Antes = $beforeState.RequireMfa; 
+            Valor_Despues = $afterState.RequireMfa; 
+            Modificado = -not ($beforeState.RequireMfa -eq $afterState.RequireMfa) 
+        }
+        $results += [PSCustomObject]@{ 
+            Rol = $roleDisplayName; 
+            Propiedad = "Requiere Aprobación"; 
+            Valor_Antes = $beforeState.RequireApproval; 
+            Valor_Despues = $afterState.RequireApproval; 
+            Modificado = -not ($beforeState.RequireApproval -eq $afterState.RequireApproval) 
+        }
+        
+    }
+    catch {
+        Write-Host "  → ERROR: $($_.Exception.Message)" -ForegroundColor Red
+        $script:Statistics.Failed++
+        Add-AuditEntry -RoleDisplayName $roleDisplayName -Action "Error" -Status "Failed" -Details $_.Exception.Message
+    }
+}
+
+Write-Progress -Activity "Procesando políticas PIM" -Completed
+
+# --- REPORTES FINALES ---
+Write-Host "`n--- Reporte de Cambios ---" -ForegroundColor Yellow
+if ($results.Count -gt 0) {
+    $results | Format-Table -AutoSize
+} else {
+    Write-Host "No se realizaron cambios o no hay datos para mostrar." -ForegroundColor Gray
+}
+
+# Exportar auditoría detallada
+Write-Host "`nGenerando reportes de auditoría..." -ForegroundColor Cyan
+Export-AuditReport
+
+# Mensaje final
+if ($DryRun) {
+    Write-Host "`n✅ SIMULACIÓN COMPLETADA - Revise el reporte antes de ejecutar en producción" -ForegroundColor Green
+} else {
+    Write-Host "`n✅ CONFIGURACIÓN COMPLETADA - Los cambios han sido aplicados" -ForegroundColor Green
+}
+
+# --- DESCONEXIÓN ---
+Write-Host "`nDesconectando de Microsoft Graph..." -ForegroundColor Yellow
+Disconnect-MgGraph -ErrorAction SilentlyContinue
+Write-Host "Script finalizado." -ForegroundColor Green
