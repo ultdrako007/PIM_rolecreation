@@ -1,0 +1,214 @@
+📋 MANUAL DE USO - SCRIPT DE ASIGNACIÓN SEGURA PIM
+🎯 DESCRIPCIÓN GENERAL
+Script modular para la gestión segura de asignaciones PIM (Privileged Identity Management) en Entra ID, implementando controles de seguridad graduales por fases y auditoría completa.
+
+🚀 INICIO RÁPIDO
+Requisitos Previos
+PowerShell 5.1 o superior
+
+Módulos: Microsoft.Graph.Identity.Governance, Microsoft.Graph.Identity.SignIns
+
+Permisos de administrador en Entra ID
+
+Conexión a internet para Microsoft Graph
+
+Instalación
+powershell
+# Instalar módulos requeridos
+Install-Module Microsoft.Graph.Identity.Governance -Force
+Install-Module Microsoft.Graph.Identity.SignIns -Force
+Ejecución Básica
+powershell
+# Modo interactivo (recomendado para nuevos usuarios)
+.\Creacion_de_roles_PIM.ps1
+
+# Modo por parámetros (para automatización)
+.\Creacion_de_roles_PIM.ps1 -CsvPath "asignaciones.csv" -Phase 2 -DryRun
+📊 ESTRUCTURA DEL CSV
+Columnas Requeridas
+csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,Duration,Reason
+Ejemplo de Archivo CSV
+csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,Duration,Reason
+12345678-1234-1234-1234-123456789012,62e90394-69f5-4237-9190-012177145e10,/,PT8H,Incidente: INC-12345 - Acceso de emergencia
+87654321-4321-4321-4321-210987654321,194ae4cb-b126-40b2-bd5b-6091b380977d,/,PT4H,Proyecto: Migración seguridad - Requiere permisos temporales
+Formatos Aceptados
+Campo	Formato	Ejemplo	Descripción
+PrincipalId	GUID	12345678-1234-1234-1234-123456789012	ID del usuario o service principal
+RoleDefinitionId	GUID	62e90394-69f5-4237-9190-012177145e10	ID del rol de Entra ID
+DirectoryScopeId	GUID	/	Ámbito del rol (usar / para global)
+Duration	ISO-8601	PT8H, P1D, P7D	Duración de la asignación
+Reason	Texto	Incidente: INC-12345	Justificación con referencia de ticket
+🔐 FASES DE SEGURIDAD
+Fase 0 - Controles Críticos
+powershell
+.\Creacion_de_roles_PIM.ps1 -Phase 0 -CsvPath "asignaciones.csv" -DryRun
+Validaciones:
+
+✅ Lista blanca de roles permitidos
+
+✅ Detección de conflictos con roles permanentes
+
+✅ Verificación de idempotencia
+
+✅ Permisos mínimos de Graph
+
+Fase 1 - Validaciones Avanzadas
+powershell
+.\Creacion_de_roles_PIM.ps1 -Phase 1 -CsvPath "asignaciones.csv" -DryRun
+Validaciones Adicionales:
+
+✅ Formato de GUID y ISO-8601
+
+✅ Existencia del PrincipalId en el directorio
+
+✅ Cumplimiento de duraciones máximas por rol
+
+✅ Verificación de políticas PIM (MFA requerida)
+
+Fase 2 - Optimización y Robustez
+powershell
+.\Creacion_de_roles_PIM.ps1 -Phase 2 -CsvPath "asignaciones.csv" -DryRun
+Características:
+
+✅ Manejo de throttling con reintentos
+
+✅ Nombres descriptivos de roles en reportes
+
+✅ Reportes de auditoría mejorados
+
+✅ Manejo robusto de errores
+
+⚙️ PARÁMETROS DEL SCRIPT
+Parámetros Principales
+Parámetro	Obligatorio	Valores	Descripción
+CsvPath	❌ Opcional	Ruta de archivo	Ruta al CSV con asignaciones
+Phase	❌ Opcional	0, 1, 2	Fase de controles de seguridad
+DryRun	❌ Opcional	Switch	Modo simulación sin cambios
+Force	❌ Opcional	Switch	Omite confirmaciones interactivas
+Ejemplos de Uso
+powershell
+# 1. Modo interactivo completo
+.\Creacion_de_roles_PIM.ps1
+
+# 2. Simulación en Fase 2
+.\Creacion_de_roles_PIM.ps1 -CsvPath "asignaciones.csv" -Phase 2 -DryRun
+
+# 3. Producción con confirmación
+.\Creacion_de_roles_PIM.ps1 -CsvPath "asignaciones.csv" -Phase 1
+
+# 4. Producción automática (sin confirmaciones)
+.\Creacion_de_roles_PIM.ps1 -CsvPath "asignaciones.csv" -Phase 0 -Force
+
+# 5. Validación de CSV sin ejecutar
+.\Creacion_de_roles_PIM.ps1 -CsvPath "asignaciones.csv" -Phase 1 -DryRun
+📋 LISTA BLANCA DE ROLES
+Roles Configurados por Default
+Tier	Role ID	Nombre	Duración Máx.	Aprobación
+Tier0	62e90394-69f5-4237-9190-012177145e10	Global Administrator	PT8H	✅ Requerida
+Tier0	194ae4cb-b126-40b2-bd5b-6091b380977d	Security Administrator	PT8H	✅ Requerida
+Tier1	f28a1f50-f6e7-4571-818b-6a12f2af6b6c	SharePoint Administrator	P1D	✅ Requerida
+Tier1	fe930be7-5e62-47db-91af-98c3a49a38b1	User Administrator	P1D	❌ No requerida
+Tier2	729827e3-9c14-49f7-bb1b-9608f156bbb8	Helpdesk Administrator	P7D	❌ No requerida
+Tier2	88d8e3e3-8f55-4a1e-953a-9b9898b8876b	Directory Readers	P30D	❌ No requerida
+Personalización de Roles
+Editar la variable $script:AllowedRoles en el script para agregar/modificar roles.
+
+🔍 FLUJO DE EJECUCIÓN
+1. Inicialización y Menú
+text
+╔═══════════════════════════════════════════════════════════╗
+║              SCRIPT DE ASIGNACIÓN SEGURA DE ROLES PIM    ║
+╚═══════════════════════════════════════════════════════════╝
+2. Validación de Prerequisitos
+✅ Módulos de PowerShell
+
+✅ Conexión a Microsoft Graph
+
+✅ Permisos necesarios
+
+✅ Hash de integridad del CSV
+
+3. Procesamiento por Fases
+text
+[1/5] Procesando Principal: 12345678-1234-1234-1234-123456789012
+✓ Eligibilidad creada para Principal: 12345678-1234-1234-1234-123456789012
+4. Generación de Reportes
+📊 Reporte CSV: PIM_Audit_ABC12345_20231201_143022.csv
+
+📋 Reporte JSON: PIM_Audit_ABC12345_20231201_143022.json
+
+📝 Log de ejecución: PIM_Logs/PIM_Execution_20231201_143022.log
+
+📊 REPORTES DE AUDITORÍA
+Estructura del Reporte CSV
+csv
+Timestamp,PrincipalId,RoleOrGroup,Action,Status,Details,RequestId,ExecutedBy,CsvHash,Phase,DryRun
+2023-12-01T14:30:22.123Z,12345678-1234-1234-1234-123456789012,62e90394-69f5-4237-9190-012177145e10,EligibilityCreated,Success,Incidente: INC-12345,req_abc123,admin@tenant.com,abc123...,2,False
+Estadísticas de Ejecución
+text
+=== RESUMEN DE EJECUCIÓN ===
+Total procesado:  15
+Exitoso:          12
+Fallido:          1
+Omitido:          2
+Conflictos:       1
+🛠️ RESOLUCIÓN DE PROBLEMAS
+Errores Comunes y Soluciones
+Error	Causa	Solución
+ERROR: Archivo CSV no encontrado	Ruta incorrecta	Verificar existencia del archivo
+ERROR: Módulo requerido no instalado	Módulos faltantes	Ejecutar Install-Module
+ERROR: No conectado a Microsoft Graph	Sin sesión activa	El script conecta automáticamente
+ROL BLOQUEADO: ... no está en lista blanca	Rol no autorizado	Agregar rol a $AllowedRoles
+CONFLICTO: Asignación permanente existente	Usuario tiene rol permanente	Migrar manualmente a PIM
+Códigos de Estado en Auditoría
+Status	Significado	Acción
+Success	Operación exitosa	Ninguna
+Failed	Error en la operación	Revisar detalles
+Blocked	Bloqueado por seguridad	Verificar permisos
+Warning	Advertencia no crítica	Revisar configuración
+AlreadyExists	Idempotencia detectada	Ninguna
+ConflictDetected	Conflicto con rol permanente	Resolver conflicto
+🔒 CONSIDERACIONES DE SEGURIDAD
+Controles Implementados
+✅ Lista blanca de roles por Tier
+
+✅ Validación de duraciones máximas
+
+✅ Detección de conflictos con roles permanentes
+
+✅ Verificación de políticas PIM (MFA)
+
+✅ Auditoría completa con hash de integridad
+
+✅ Validación de existencia de entidades
+
+Mejores Prácticas
+Siempre usar DryRun primero para validaciones
+
+Empezar con Fase 0 e ir incrementando controles
+
+Revisar reportes de auditoría después de cada ejecución
+
+Mantener actualizada la lista blanca de roles
+
+Usar justificaciones detalladas con referencias a tickets
+
+📞 SOPORTE Y MANTENIMIENTO
+Monitoreo Recomendado
+Revisar logs en PIM_Logs/ después de cada ejecución
+
+Monitorear reportes de auditoría para detectar anomalías
+
+Validar periodicamente la lista blanca de roles
+
+Personalización
+El script está diseñado para ser modular y fácil de personalizar:
+
+Modificar $script:AllowedRoles para agregar roles
+
+Ajustar $script:RequiredPermissions por fase
+
+Personalizar formatos de reporte en Export-AuditReport
+
