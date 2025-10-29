@@ -1,0 +1,4 @@
+# ===== ROLES DE ENTRA ID (Azure AD) =====
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleName,AzureScope,GroupId,Reason,Duration
+00000000-0000-0000-0000-000000000001,62e90394-69f5-4237-9190-012177145e10,/,,,INC-12345: Configuración temporal tenant,PT8H
+00000000-0000-0000-0000-000000000002,194ae4cb-b126-40b
