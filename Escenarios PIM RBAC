@@ -1,0 +1,660 @@
+# Escenarios de Migración Completos
+
+## 🎯 Escenario 1: Migración Híbrida (Entra ID + Azure RBAC)
+
+### **Contexto**
+Usuario "Juan Pérez" tiene actualmente:
+- **Global Administrator** permanente en Entra ID
+- **Owner** permanente en suscripción Azure Production
+- **Contributor** permanente en Resource Group "rg-apps"
+
+**Objetivo**: Convertir todo a PIM con duraciones apropiadas.
+
+---
+
+### **Paso 1: Identificar Asignaciones Actuales**
+
+```powershell
+# Obtener datos del usuario
+$userEmail = "juan.perez@contoso.com"
+$user = Get-AzADUser -UserPrincipalName $userEmail
+$principalId = $user.Id
+
+Write-Host "Usuario: $($user.DisplayName)"
+Write-Host "PrincipalId: $principalId"
+
+# === ROLES ENTRA ID ===
+Write-Host "`n=== Roles Entra ID Actuales ===" -ForegroundColor Cyan
+$entraRoles = Get-MgRoleManagementDirectoryRoleAssignment -Filter "principalId eq '$principalId'"
+$entraRoles | ForEach-Object {
+    $roleDef = Get-MgDirectoryRoleTemplate -DirectoryRoleTemplateId $_.RoleDefinitionId
+    [PSCustomObject]@{
+        Tipo = "Entra ID"
+        Rol = $roleDef.DisplayName
+        RoleId = $_.RoleDefinitionId
+        Scope = $_.DirectoryScopeId
+        AssignmentId = $_.Id
+    }
+} | Format-Table
+
+# === ROLES AZURE RBAC ===
+Write-Host "`n=== Roles Azure RBAC Actuales ===" -ForegroundColor Cyan
+$azureRoles = Get-AzRoleAssignment -ObjectId $principalId
+$azureRoles | Select-Object RoleDefinitionName, Scope, RoleAssignmentId | Format-Table
+```
+
+**Salida ejemplo:**
+```
+=== Roles Entra ID Actuales ===
+Tipo      Rol                   RoleId                                Scope  AssignmentId
+----      ---                   ------                                -----  ------------
+Entra ID  Global Administrator  62e90394-69f5-4237-9190-012177145e10  /      abc-123-def
+
+=== Roles Azure RBAC Actuales ===
+RoleDefinitionName  Scope                                                           RoleAssignmentId
+------------------  -----                                                           ----------------
+Owner               /subscriptions/12345678-1234-1234-1234-123456789abc            xyz-789-uvw
+Contributor         /subscriptions/12345678.../resourceGroups/rg-apps               klm-456-nop
+```
+
+---
+
+### **Paso 2: Crear CSV de Migración**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleName,AzureScope,GroupId,Reason,Duration
+# === ENTRA ID ROLE ===
+juan-principal-id-guid,62e90394-69f5-4237-9190-012177145e10,/,,,MIGRATION-2025: Conversión Global Admin a PIM,PT8H
+
+# === AZURE RBAC ROLES ===
+juan-principal-id-guid,,,Owner,/subscriptions/12345678-1234-1234-1234-123456789abc,,MIGRATION-2025: Conversión Owner suscripción a PIM,PT4H
+juan-principal-id-guid,,,Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-apps,,MIGRATION-2025: Conversión Contributor RG a PIM,PT8H
+```
+
+---
+
+### **Paso 3: Ejecutar Dry-Run**
+
+```powershell
+# Conectar a ambos servicios
+Connect-MgGraph -Scopes "RoleEligibilitySchedule.ReadWrite.Directory"
+Connect-AzAccount
+Set-AzContext -SubscriptionId "12345678-1234-1234-1234-123456789abc"
+
+# Ejecutar simulación
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "migration_juan_perez.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -DryRun
+```
+
+**Validaciones esperadas:**
+```
+[1/3] Procesando Principal: juan-principal-id-guid
+CONFLICTO: Principal tiene asignación permanente activa
+  → Requiere migración manual de rol permanente
+
+[2/3] Procesando Principal: juan-principal-id-guid
+CONFLICTO AZURE: Principal tiene asignación permanente de 'Owner'
+  → Requiere migración manual de rol permanente
+
+[3/3] Procesando Principal: juan-principal-id-guid
+CONFLICTO AZURE: Principal tiene asignación permanente de 'Contributor'
+  → Requiere migración manual de rol permanente
+```
+
+---
+
+### **Paso 4: Proceso de Migración Manual**
+
+Como hay conflictos, necesitamos un proceso controlado:
+
+```powershell
+# === OPCIÓN A: Migración Segura (crear PIM primero, validar, luego revocar) ===
+
+# 1. Crear eligibilidades SIN revocar permanentes
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "migration_juan_perez.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -Force
+
+# 2. Validar que las eligibilidades fueron creadas
+Write-Host "`n=== Validando Eligibilidades Creadas ===" -ForegroundColor Cyan
+
+# Entra ID
+$entraElig = Get-MgRoleManagementDirectoryRoleEligibilitySchedule -Filter "principalId eq '$principalId'"
+Write-Host "Eligibilidades Entra ID: $($entraElig.Count)"
+
+# Azure RBAC
+$azureElig = Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/12345678-1234-1234-1234-123456789abc" -Filter "asTarget()" |
+    Where-Object { $_.PrincipalId -eq $principalId }
+Write-Host "Eligibilidades Azure: $($azureElig.Count)"
+
+# 3. NOTIFICAR AL USUARIO que active sus roles PIM AHORA
+Write-Host "`n⚠️  ACCIÓN REQUERIDA:" -ForegroundColor Yellow
+Write-Host "1. Pedir a Juan que active sus roles PIM ahora"
+Write-Host "2. Validar que puede trabajar normalmente"
+Write-Host "3. Presionar ENTER cuando esté confirmado..."
+Read-Host
+
+# 4. Revocar roles permanentes (después de confirmar que PIM funciona)
+Write-Host "`n=== Revocando Roles Permanentes ===" -ForegroundColor Red
+
+# Revocar Entra ID
+$entraRoles | ForEach-Object {
+    Write-Host "Revocando: $($_.RoleDefinitionId)"
+    Remove-MgRoleManagementDirectoryRoleAssignment -UnifiedRoleAssignmentId $_.Id
+}
+
+# Revocar Azure RBAC
+$azureRoles | ForEach-Object {
+    Write-Host "Revocando: $($_.RoleDefinitionName) en $($_.Scope)"
+    Remove-AzRoleAssignment -ObjectId $principalId -RoleDefinitionName $_.RoleDefinitionName -Scope $_.Scope
+}
+
+Write-Host "`n✓ Migración completada" -ForegroundColor Green
+```
+
+---
+
+### **Paso 5: Validación Post-Migración**
+
+```powershell
+Write-Host "`n=== Estado Final ===" -ForegroundColor Cyan
+
+# Verificar que NO hay roles permanentes
+$entraCheck = Get-MgRoleManagementDirectoryRoleAssignment -Filter "principalId eq '$principalId'"
+$azureCheck = Get-AzRoleAssignment -ObjectId $principalId
+
+if ($entraCheck) {
+    Write-Warning "⚠️  Aún existen asignaciones permanentes Entra ID"
+    $entraCheck | Format-Table
+} else {
+    Write-Host "✓ Sin roles permanentes Entra ID" -ForegroundColor Green
+}
+
+if ($azureCheck) {
+    Write-Warning "⚠️  Aún existen asignaciones permanentes Azure"
+    $azureCheck | Format-Table
+} else {
+    Write-Host "✓ Sin roles permanentes Azure" -ForegroundColor Green
+}
+
+# Verificar eligibilidades PIM
+Write-Host "`nEligibilidades PIM activas:" -ForegroundColor Cyan
+Get-MgRoleManagementDirectoryRoleEligibilitySchedule -Filter "principalId eq '$principalId'" | 
+    Select-Object RoleDefinitionId, @{N='ExpiresAt';E={$_.ScheduleInfo.Expiration.EndDateTime}} |
+    Format-Table
+
+Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/12345678-1234-1234-1234-123456789abc" -Filter "asTarget()" |
+    Where-Object { $_.PrincipalId -eq $principalId } |
+    Select-Object RoleDefinitionDisplayName, @{N='ExpiresAt';E={$_.EndDateTime}} |
+    Format-Table
+```
+
+---
+
+## 🎯 Escenario 2: Onboarding Masivo con Roles Mixtos
+
+### **Contexto**
+10 nuevos DevOps engineers necesitan:
+- **Contributor** en suscripción Dev (Azure)
+- **Application Administrator** en Entra ID
+- Membresía en grupo "PIM-DevOps-Team"
+
+---
+
+### **Paso 1: Obtener Datos de Usuarios**
+
+```powershell
+# Lista de nuevos empleados
+$newEmployees = @(
+    "maria.garcia@contoso.com",
+    "carlos.lopez@contoso.com",
+    "ana.martinez@contoso.com"
+    # ... más usuarios
+)
+
+# Obtener PrincipalIds
+$userData = $newEmployees | ForEach-Object {
+    $user = Get-AzADUser -UserPrincipalName $_
+    [PSCustomObject]@{
+        Email = $_
+        DisplayName = $user.DisplayName
+        PrincipalId = $user.Id
+    }
+}
+
+$userData | Format-Table
+```
+
+---
+
+### **Paso 2: Generar CSV Automatizado**
+
+```powershell
+$subscriptionId = "dev-subscription-id"
+$devOpsGroupId = "pim-devops-group-id"
+$appAdminRoleId = "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3"  # Application Administrator
+
+$assignments = @()
+
+foreach ($user in $userData) {
+    # Rol Entra ID
+    $assignments += [PSCustomObject]@{
+        PrincipalId = $user.PrincipalId
+        RoleDefinitionId = $appAdminRoleId
+        DirectoryScopeId = '/'
+        AzureRoleName = ''
+        AzureScope = ''
+        GroupId = ''
+        Reason = "ONBOARD-Q4-2025: DevOps Team - $($user.DisplayName)"
+        Duration = 'P90D'  # 90 días inicial
+    }
+    
+    # Rol Azure RBAC
+    $assignments += [PSCustomObject]@{
+        PrincipalId = $user.PrincipalId
+        RoleDefinitionId = ''
+        DirectoryScopeId = ''
+        AzureRoleName = 'Contributor'
+        AzureScope = "/subscriptions/$subscriptionId"
+        GroupId = ''
+        Reason = "ONBOARD-Q4-2025: DevOps Team - $($user.DisplayName)"
+        Duration = 'P90D'
+    }
+    
+    # Grupo PIM
+    $assignments += [PSCustomObject]@{
+        PrincipalId = $user.PrincipalId
+        RoleDefinitionId = ''
+        DirectoryScopeId = ''
+        AzureRoleName = ''
+        AzureScope = ''
+        GroupId = $devOpsGroupId
+        Reason = "ONBOARD-Q4-2025: DevOps Team - $($user.DisplayName)"
+        Duration = 'P90D'
+    }
+}
+
+$assignments | Export-Csv "onboarding_devops_q4_2025.csv" -NoTypeInformation
+Write-Host "✓ CSV generado con $($assignments.Count) asignaciones"
+```
+
+---
+
+### **Paso 3: Ejecutar con Validación Progresiva**
+
+```powershell
+# Dry-Run
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "onboarding_devops_q4_2025.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -DryRun
+
+# Si exitoso, ejecutar en producción
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "onboarding_devops_q4_2025.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -Force
+```
+
+---
+
+## 🎯 Escenario 3: Proyecto Temporal con Múltiples Scopes
+
+### **Contexto**
+Proyecto "Migration-2025" requiere acceso temporal a múltiples recursos:
+- 5 consultores externos
+- Acceso por 60 días
+- Diferentes niveles de acceso según rol
+
+**Roles necesarios:**
+- **Arquitecto Principal**: Owner en suscripción Migration
+- **DevOps (3)**: Contributor en RG específicos
+- **QA Tester**: Reader en todos los RG
+
+---
+
+### **Paso 1: Definir Estructura**
+
+```powershell
+$projectTeam = @(
+    @{
+        Name = "Consultor Arquitecto"
+        Email = "arquitecto@external.com"
+        AzureRole = "Owner"
+        Scope = "/subscriptions/migration-sub-id"
+    },
+    @{
+        Name = "DevOps 1"
+        Email = "devops1@external.com"
+        AzureRole = "Contributor"
+        Scope = "/subscriptions/migration-sub-id/resourceGroups/rg-backend"
+    },
+    @{
+        Name = "DevOps 2"
+        Email = "devops2@external.com"
+        AzureRole = "Contributor"
+        Scope = "/subscriptions/migration-sub-id/resourceGroups/rg-frontend"
+    },
+    @{
+        Name = "DevOps 3"
+        Email = "devops3@external.com"
+        AzureRole = "Contributor"
+        Scope = "/subscriptions/migration-sub-id/resourceGroups/rg-data"
+    },
+    @{
+        Name = "QA Tester"
+        Email = "qa@external.com"
+        AzureRole = "Reader"
+        Scope = "/subscriptions/migration-sub-id"
+    }
+)
+```
+
+---
+
+### **Paso 2: Generar CSV con Validaciones**
+
+```powershell
+$assignments = @()
+
+foreach ($member in $projectTeam) {
+    # Obtener PrincipalId
+    $user = Get-AzADUser -UserPrincipalName $member.Email -ErrorAction SilentlyContinue
+    
+    if (-not $user) {
+        Write-Warning "Usuario no encontrado: $($member.Email)"
+        continue
+    }
+    
+    # Validar que el scope existe
+    if ($member.Scope -match '/resourceGroups/') {
+        $rgExists = Get-AzResourceGroup -Id $member.Scope -ErrorAction SilentlyContinue
+        if (-not $rgExists) {
+            Write-Warning "Resource Group no existe: $($member.Scope)"
+            continue
+        }
+    }
+    
+    # Agregar asignación
+    $assignments += [PSCustomObject]@{
+        PrincipalId = $user.Id
+        RoleDefinitionId = ''
+        DirectoryScopeId = ''
+        AzureRoleName = $member.AzureRole
+        AzureScope = $member.Scope
+        GroupId = ''
+        Reason = "PROJECT-MIGRATION-2025: $($member.Name)"
+        Duration = 'P60D'  # 60 días
+    }
+}
+
+$assignments | Export-Csv "project_migration_2025.csv" -NoTypeInformation
+Write-Host "✓ CSV generado con $($assignments.Count) asignaciones"
+```
+
+---
+
+### **Paso 3: Implementar con Aprobación**
+
+```powershell
+# 1. Generar reporte para aprobación
+Write-Host "`n=== REPORTE DE ASIGNACIONES PARA APROBACIÓN ===" -ForegroundColor Cyan
+Import-Csv "project_migration_2025.csv" | ForEach-Object {
+    $user = Get-AzADUser -ObjectId $_.PrincipalId
+    [PSCustomObject]@{
+        Usuario = $user.DisplayName
+        Email = $user.UserPrincipalName
+        Rol = $_.AzureRoleName
+        Scope = $_.AzureScope
+        Duración = $_.Duration
+        Justificación = $_.Reason
+    }
+} | Format-Table -AutoSize | Out-File "approval_request_migration_2025.txt"
+
+Write-Host "✓ Reporte generado: approval_request_migration_2025.txt"
+Write-Host "`nEnviar este reporte a:"
+Write-Host "  - Manager del proyecto"
+Write-Host "  - Security team"
+Write-Host "  - Compliance officer"
+Write-Host "`nPresionar ENTER cuando esté aprobado..."
+Read-Host
+
+# 2. Ejecutar después de aprobación
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "project_migration_2025.csv" `
+    -Phase 2 `
+    -SupportAzureRBAC
+```
+
+---
+
+## 🎯 Escenario 4: Renovación Automática de Eligibilidades
+
+### **Contexto**
+Eligibilidades PIM expiran cada 90 días y necesitan renovarse.
+
+---
+
+### **Script de Renovación Automatizada**
+
+```powershell
+<#
+.SYNOPSIS
+    Renueva eligibilidades PIM que expiran pronto
+#>
+
+param(
+    [int]$DaysBeforeExpiry = 7,
+    [string]$NewDuration = 'P90D'
+)
+
+Write-Host "=== Buscando Eligibilidades que Expiran ===" -ForegroundColor Cyan
+
+$expiryThreshold = (Get-Date).AddDays($DaysBeforeExpiry)
+$renewals = @()
+
+# === ENTRA ID ===
+$entraEligibilities = Get-MgRoleManagementDirectoryRoleEligibilitySchedule -All
+
+foreach ($elig in $entraEligibilities) {
+    $expiryDate = $elig.ScheduleInfo.Expiration.EndDateTime
+    
+    if ($expiryDate -and $expiryDate -le $expiryThreshold) {
+        $user = Get-MgUser -UserId $elig.PrincipalId -ErrorAction SilentlyContinue
+        $role = Get-MgDirectoryRoleTemplate -DirectoryRoleTemplateId $elig.RoleDefinitionId
+        
+        Write-Host "⚠️  Expira: $($user.DisplayName) - $($role.DisplayName) - $expiryDate" -ForegroundColor Yellow
+        
+        $renewals += [PSCustomObject]@{
+            PrincipalId = $elig.PrincipalId
+            RoleDefinitionId = $elig.RoleDefinitionId
+            DirectoryScopeId = '/'
+            AzureRoleName = ''
+            AzureScope = ''
+            GroupId = ''
+            Reason = "RENEWAL-$(Get-Date -Format 'yyyyMMdd'): Renovación automática"
+            Duration = $NewDuration
+        }
+    }
+}
+
+# === AZURE RBAC ===
+$subscriptions = Get-AzSubscription
+foreach ($sub in $subscriptions) {
+    Set-AzContext -SubscriptionId $sub.Id | Out-Null
+    
+    $azureEligibilities = Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/$($sub.Id)" -Filter "asTarget()"
+    
+    foreach ($elig in $azureEligibilities) {
+        if ($elig.EndDateTime -and $elig.EndDateTime -le $expiryThreshold) {
+            Write-Host "⚠️  Expira: $($elig.PrincipalDisplayName) - $($elig.RoleDefinitionDisplayName) - $($elig.EndDateTime)" -ForegroundColor Yellow
+            
+            $renewals += [PSCustomObject]@{
+                PrincipalId = $elig.PrincipalId
+                RoleDefinitionId = ''
+                DirectoryScopeId = ''
+                AzureRoleName = $elig.RoleDefinitionDisplayName
+                AzureScope = $elig.Scope
+                GroupId = ''
+                Reason = "RENEWAL-$(Get-Date -Format 'yyyyMMdd'): Renovación automática"
+                Duration = $NewDuration
+            }
+        }
+    }
+}
+
+# Generar CSV
+if ($renewals.Count -gt 0) {
+    $csvPath = "renewals_$(Get-Date -Format 'yyyyMMdd').csv"
+    $renewals | Export-Csv $csvPath -NoTypeInformation
+    
+    Write-Host "`n✓ $($renewals.Count) eligibilidades requieren renovación" -ForegroundColor Yellow
+    Write-Host "CSV generado: $csvPath"
+    
+    # Ejecutar renovación
+    $confirm = Read-Host "`n¿Ejecutar renovaciones ahora? (Si/No)"
+    if ($confirm -eq 'Si') {
+        .\PIM-SecureAssignment-ARM.ps1 `
+            -CsvPath $csvPath `
+            -Phase 2 `
+            -SupportAzureRBAC `
+            -Force
+    }
+} else {
+    Write-Host "`n✓ No hay eligibilidades que requieran renovación" -ForegroundColor Green
+}
+```
+
+---
+
+## 📊 Dashboard de Monitoreo
+
+### **Script de Reporte Consolidado**
+
+```powershell
+<#
+.SYNOPSIS
+    Genera dashboard de estado PIM
+#>
+
+Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║  PIM STATUS DASHBOARD - $(Get-Date -Format 'yyyy-MM-dd')  ║" -ForegroundColor Cyan
+Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
+
+# === ENTRA ID ===
+Write-Host "`n=== ENTRA ID ROLES ===" -ForegroundColor Cyan
+
+$entraEligibilities = Get-MgRoleManagementDirectoryRoleEligibilitySchedule -All
+$entraActive = Get-MgRoleManagementDirectoryRoleAssignmentSchedule -All
+
+Write-Host "Eligibilidades activas:  $($entraEligibilities.Count)" -ForegroundColor White
+Write-Host "Asignaciones activas:    $($entraActive.Count)" -ForegroundColor White
+
+# Top 5 roles más asignados
+$topEntraRoles = $entraEligibilities | Group-Object RoleDefinitionId | 
+    Sort-Object Count -Descending | Select-Object -First 5
+
+Write-Host "`nTop 5 Roles Entra ID:" -ForegroundColor Yellow
+foreach ($role in $topEntraRoles) {
+    $roleDef = Get-MgDirectoryRoleTemplate -DirectoryRoleTemplateId $role.Name
+    Write-Host "  $($roleDef.DisplayName): $($role.Count) usuarios" -ForegroundColor White
+}
+
+# === AZURE RBAC ===
+Write-Host "`n=== AZURE RBAC ROLES ===" -ForegroundColor Cyan
+
+$allAzureEligibilities = @()
+$subscriptions = Get-AzSubscription
+
+foreach ($sub in $subscriptions) {
+    Set-AzContext -SubscriptionId $sub.Id | Out-Null
+    $eligibilities = Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/$($sub.Id)" -Filter "asTarget()"
+    $allAzureEligibilities += $eligibilities
+}
+
+Write-Host "Eligibilidades totales:  $($allAzureEligibilities.Count)" -ForegroundColor White
+
+# Top 5 roles Azure
+$topAzureRoles = $allAzureEligibilities | Group-Object RoleDefinitionDisplayName | 
+    Sort-Object Count -Descending | Select-Object -First 5
+
+Write-Host "`nTop 5 Roles Azure:" -ForegroundColor Yellow
+foreach ($role in $topAzureRoles) {
+    Write-Host "  $($role.Name): $($role.Count) asignaciones" -ForegroundColor White
+}
+
+# === EXPIRACIONES PRÓXIMAS ===
+Write-Host "`n=== EXPIRACIONES (Próximos 30 días) ===" -ForegroundColor Yellow
+
+$expiryThreshold = (Get-Date).AddDays(30)
+$expiringEntra = $entraEligibilities | Where-Object { 
+    $_.ScheduleInfo.Expiration.EndDateTime -and 
+    $_.ScheduleInfo.Expiration.EndDateTime -le $expiryThreshold 
+}
+$expiringAzure = $allAzureEligibilities | Where-Object { 
+    $_.EndDateTime -and 
+    $_.EndDateTime -le $expiryThreshold 
+}
+
+Write-Host "Entra ID expirando: $($expiringEntra.Count)" -ForegroundColor White
+Write-Host "Azure expirando:    $($expiringAzure.Count)" -ForegroundColor White
+
+if (($expiringEntra.Count + $expiringAzure.Count) -gt 0) {
+    Write-Host "`n⚠️  Acción requerida: Planificar renovaciones" -ForegroundColor Yellow
+}
+
+Write-Host "`n✓ Dashboard generado" -ForegroundColor Green
+```
+
+---
+
+## 🔧 Herramientas Adicionales
+
+### **Exportar Todo el Estado PIM**
+
+```powershell
+# Exportar snapshot completo
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+# Entra ID
+Get-MgRoleManagementDirectoryRoleEligibilitySchedule -All | 
+    Export-Csv "pim_snapshot_entra_${timestamp}.csv" -NoTypeInformation
+
+# Azure RBAC
+$allEligibilities = @()
+Get-AzSubscription | ForEach-Object {
+    Set-AzContext -SubscriptionId $_.Id | Out-Null
+    $allEligibilities += Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/$($_.Id)" -Filter "asTarget()"
+}
+$allEligibilities | Export-Csv "pim_snapshot_azure_${timestamp}.csv" -NoTypeInformation
+
+Write-Host "✓ Snapshots exportados con timestamp: $timestamp"
+```
+
+---
+
+## ✅ Resumen de Comandos Clave
+
+```powershell
+# Conectar
+Connect-MgGraph -Scopes "RoleEligibilitySchedule.ReadWrite.Directory"
+Connect-AzAccount
+
+# Listar eligibilidades
+Get-MgRoleManagementDirectoryRoleEligibilitySchedule -All
+Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/xxx" -Filter "asTarget()"
+
+# Ejecutar script
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -DryRun
+
+# Validar resultados
+Get-MgRoleManagementDirectoryRoleEligibilitySchedule -Filter "principalId eq 'guid'"
+Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/xxx" -Filter "asTarget()" | Where-Object { $_.PrincipalId -eq 'guid' }
+```
