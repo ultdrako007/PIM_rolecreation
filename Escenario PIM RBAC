@@ -1,0 +1,50 @@
+# Escenarios de Migración Completos
+
+## 🎯 Escenario 1: Migración Híbrida (Entra ID + Azure RBAC)
+
+### **Contexto**
+Usuario "Juan Pérez" tiene actualmente:
+- **Global Administrator** permanente en Entra ID
+- **Owner** permanente en suscripción Azure Production
+- **Contributor** permanente en Resource Group "rg-apps"
+
+**Objetivo**: Convertir todo a PIM con duraciones apropiadas.
+
+---
+
+### **Paso 1: Identificar Asignaciones Actuales**
+
+```powershell
+# Obtener datos del usuario
+$userEmail = "juan.perez@contoso.com"
+$user = Get-AzADUser -UserPrincipalName $userEmail
+$principalId = $user.Id
+
+Write-Host "Usuario: $($user.DisplayName)"
+Write-Host "PrincipalId: $principalId"
+
+# === ROLES ENTRA ID ===
+Write-Host "`n=== Roles Entra ID Actuales ===" -ForegroundColor Cyan
+$entraRoles = Get-MgRoleManagementDirectoryRoleAssignment -Filter "principalId eq '$principalId'"
+$entraRoles | ForEach-Object {
+    $roleDef = Get-MgDirectoryRoleTemplate -DirectoryRoleTemplateId $_.RoleDefinitionId
+    [PSCustomObject]@{
+        Tipo = "Entra ID"
+        Rol = $roleDef.DisplayName
+        RoleId = $_.RoleDefinitionId
+        Scope = $_.DirectoryScopeId
+        AssignmentId = $_.Id
+    }
+} | Format-Table
+
+# === ROLES AZURE RBAC ===
+Write-Host "`n=== Roles Azure RBAC Actuales ===" -ForegroundColor Cyan
+$azureRoles = Get-AzRoleAssignment -ObjectId $principalId
+$azureRoles | Select-Object RoleDefinitionName, Scope, RoleAssignmentId | Format-Table
+```
+
+**Salida ejemplo:**
+```
+=== Roles Entra ID Actuales ===
+Tipo      Rol                   RoleId                                Scope
+----      ---                   ------                               -------
