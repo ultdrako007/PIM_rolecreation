@@ -1,4 +1,26 @@
-# ===== ROLES DE ENTRA ID (Azure AD) =====
 PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleName,AzureScope,GroupId,Reason,Duration
+# ===== ROLES DE ENTRA ID (Azure AD) =====
 00000000-0000-0000-0000-000000000001,62e90394-69f5-4237-9190-012177145e10,/,,,INC-12345: Configuración temporal tenant,PT8H
-00000000-0000-0000-0000-000000000002,194ae4cb-b126-40b
+00000000-0000-0000-0000-000000000002,194ae4cb-b126-40b2-bd5b-6091b380977d,/,,,RITM-67890: Revisión políticas seguridad,PT8H
+00000000-0000-0000-0000-000000000003,729827e3-9c14-49f7-bb1b-9608f156bbb8,/,,,SCTASK-33333: Soporte nivel 1 temporal,P7D
+
+# ===== ROLES DE AZURE RBAC (Suscripción completa) =====
+00000000-0000-0000-0000-000000000004,,,Owner,/subscriptions/12345678-1234-1234-1234-123456789abc,,CHG-11111: Migración crítica proyecto X,PT4H
+00000000-0000-0000-0000-000000000005,,,Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc,,TASK-22222: Despliegue aplicación producción,PT8H
+00000000-0000-0000-0000-000000000006,,,Reader,/subscriptions/12345678-1234-1234-1234-123456789abc,,INC-44444: Troubleshooting lectura logs,P30D
+
+# ===== ROLES DE AZURE RBAC (Resource Group específico) =====
+00000000-0000-0000-0000-000000000007,,,Virtual Machine Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-production,,RITM-55555: Mantenimiento VMs producción,P1D
+00000000-0000-0000-0000-000000000008,,,Storage Account Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-data,,CHG-66666: Configuración storage accounts,P1D
+00000000-0000-0000-0000-000000000009,,,Network Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-network,,TASK-77777: Configuración NSGs y firewalls,P1D
+
+# ===== ROLES DE AZURE RBAC (Recurso específico) =====
+00000000-0000-0000-0000-000000000010,,,Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-app/providers/Microsoft.Web/sites/webapp-prod,,INC-88888: Hotfix aplicación crítica,PT12H
+
+# ===== GRUPOS PIM =====
+00000000-0000-0000-0000-000000000011,,,,,11111111-1111-1111-1111-111111111111,TASK-99999: Membresía grupo admins Azure,P30D
+00000000-0000-0000-0000-000000000012,,,,,22222222-2222-2222-2222-222222222222,ONBOARD-2025: Grupo acceso lectores seguridad,P90D
+
+# ===== COMBINACIONES (múltiples roles para mismo usuario) =====
+00000000-0000-0000-0000-000000000013,fe930be7-5e62-47db-91af-98c3a49a38b1,/,,,PROJECT-ALPHA: User Administrator Entra ID,P1D
+00000000-0000-0000-0000-000000000013,,,Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-project-alpha,,PROJECT-ALPHA: Contributor en RG proyecto,P1D
