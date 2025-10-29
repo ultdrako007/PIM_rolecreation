@@ -1,0 +1,552 @@
+# Guía Completa - Azure RBAC con PIM
+
+## 🎯 Diferencias Clave: Entra ID vs Azure RBAC
+
+| Aspecto | Entra ID Roles | Azure RBAC Roles |
+|---------|---------------|------------------|
+| **¿Qué gestiona?** | Administración del tenant (usuarios, grupos, aplicaciones) | Recursos de Azure (VMs, Storage, Networks) |
+| **Scope** | Directorio (`/`) | Suscripción, Resource Group, o Recurso específico |
+| **API** | Microsoft Graph | Azure Resource Manager (ARM) |
+| **Módulo PowerShell** | `Microsoft.Graph.*` | `Az.Resources` |
+| **Ejemplos de roles** | Global Admin, User Admin, Security Admin | Owner, Contributor, Reader, VM Contributor |
+| **Portal** | Azure AD > Roles and administrators | Azure > Subscriptions > Access Control (IAM) |
+
+---
+
+## 📋 Estructura del Scope de Azure
+
+### Jerarquía de Scopes
+
+```
+Management Group (opcional)
+  └── Subscription
+       └── Resource Group
+            └── Resource
+```
+
+### Formato de Scopes
+
+```powershell
+# Nivel de Management Group
+/providers/Microsoft.Management/managementGroups/mg-production
+
+# Nivel de Suscripción (scope más común)
+/subscriptions/12345678-1234-1234-1234-123456789abc
+
+# Nivel de Resource Group
+/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-production
+
+# Nivel de Recurso específico (VM)
+/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-compute/providers/Microsoft.Compute/virtualMachines/vm-web-01
+
+# Nivel de Recurso específico (Storage Account)
+/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/stdatalake01
+
+# Nivel de Recurso específico (Web App)
+/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-app/providers/Microsoft.Web/sites/webapp-prod
+```
+
+---
+
+## 🚀 Inicio Rápido - Roles Azure RBAC
+
+### **1. Prerrequisitos**
+
+```powershell
+# Instalar módulo Az.Resources
+Install-Module Az.Resources -Scope CurrentUser -Force
+
+# Conectar a Azure
+Connect-AzAccount
+
+# Verificar suscripción activa
+Get-AzContext
+
+# Listar todas las suscripciones disponibles
+Get-AzSubscription
+```
+
+### **2. Obtener IDs de Suscripción**
+
+```powershell
+# Método 1: PowerShell
+$subscription = Get-AzSubscription -SubscriptionName "Production"
+$subscriptionId = $subscription.Id
+
+Write-Host "Subscription ID: $subscriptionId"
+Write-Host "Scope completo: /subscriptions/$subscriptionId"
+
+# Método 2: Azure CLI
+az account show --query id -o tsv
+
+# Método 3: Portal Azure
+# Azure Portal > Subscriptions > [Tu suscripción] > Overview
+# Copiar "Subscription ID"
+```
+
+### **3. Listar Roles Disponibles**
+
+```powershell
+# Roles built-in de Azure
+Get-AzRoleDefinition | Select-Object Name, Description | Sort-Object Name
+
+# Roles más comunes
+Get-AzRoleDefinition | Where-Object { 
+    $_.Name -in @('Owner', 'Contributor', 'Reader', 'User Access Administrator')
+} | Format-Table Name, Description
+
+# Buscar roles por keyword
+Get-AzRoleDefinition | Where-Object { $_.Name -like "*Virtual Machine*" }
+```
+
+**Salida ejemplo:**
+```
+Name                                    Description
+----                                    -----------
+Owner                                   Grants full access to manage all resources
+Contributor                             Can create and manage all types of Azure resources
+Reader                                  Can view everything, but not make any changes
+Virtual Machine Contributor             Lets you manage virtual machines, but not access to them
+Storage Account Contributor             Lets you manage storage accounts
+Network Contributor                     Lets you manage network resources
+```
+
+---
+
+## 🔑 Roles Azure RBAC Más Comunes
+
+### **Tier 0 - Críticos (Acceso Administrativo Completo)**
+
+| Rol | Descripción | Duración Recomendada | Scope Típico |
+|-----|-------------|---------------------|--------------|
+| **Owner** | Control total (recursos + permisos) | 4-8 horas | Suscripción / RG |
+| **User Access Administrator** | Gestión de permisos sin tocar recursos | 4-8 horas | Suscripción |
+
+### **Tier 1 - Administrativos (Gestión de Recursos)**
+
+| Rol | Descripción | Duración Recomendada | Scope Típico |
+|-----|-------------|---------------------|--------------|
+| **Contributor** | Crear/gestionar recursos (sin asignar permisos) | 8-24 horas | RG específico |
+| **Virtual Machine Contributor** | Gestionar VMs | 1-7 días | RG de compute |
+| **Storage Account Contributor** | Gestionar storage accounts | 1-7 días | RG de data |
+| **Network Contributor** | Gestionar redes, NSGs, VNets | 1-7 días | RG de network |
+| **SQL DB Contributor** | Gestionar SQL databases | 1-7 días | RG de databases |
+
+### **Tier 2 - Operativos/Lectura**
+
+| Rol | Descripción | Duración Recomendada | Scope Típico |
+|-----|-------------|---------------------|--------------|
+| **Reader** | Ver todos los recursos (sin modificar) | 30-90 días | Suscripción / RG |
+| **Monitoring Reader** | Leer datos de monitoreo | 30-90 días | Suscripción |
+| **Log Analytics Reader** | Ver y buscar logs | 30-90 días | Workspace específico |
+| **Backup Reader** | Ver configuración de backups | 30 días | Recovery Services Vault |
+
+---
+
+## 📝 Preparar CSV para Azure RBAC
+
+### **Estructura del CSV**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleName,AzureScope,GroupId,Reason,Duration
+```
+
+**Campos específicos para Azure RBAC:**
+- `AzureRoleName`: Nombre exacto del rol (case-sensitive)
+- `AzureScope`: Ruta completa del scope ARM
+- Dejar vacíos: `RoleDefinitionId`, `DirectoryScopeId`, `GroupId`
+
+### **Ejemplo 1: Owner de Suscripción**
+
+```csv
+PrincipalId,AzureRoleName,AzureScope,Reason,Duration
+00000000-0000-0000-0000-000000000001,Owner,/subscriptions/12345678-1234-1234-1234-123456789abc,INC-001: Migración crítica,PT4H
+```
+
+### **Ejemplo 2: Contributor en Resource Group**
+
+```csv
+PrincipalId,AzureRoleName,AzureScope,Reason,Duration
+00000000-0000-0000-0000-000000000002,Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-production,TASK-002: Deploy nueva app,PT8H
+```
+
+### **Ejemplo 3: VM Contributor en RG específico**
+
+```csv
+PrincipalId,AzureRoleName,AzureScope,Reason,Duration
+00000000-0000-0000-0000-000000000003,Virtual Machine Contributor,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-compute,CHG-003: Resize VMs,P1D
+```
+
+### **Ejemplo 4: Reader de Recurso Específico**
+
+```csv
+PrincipalId,AzureRoleName,AzureScope,Reason,Duration
+00000000-0000-0000-0000-000000000004,Reader,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-app/providers/Microsoft.Web/sites/webapp-prod,INC-004: Troubleshooting app,P7D
+```
+
+---
+
+## 🔧 Scripts de Apoyo
+
+### **Generar CSV desde Asignaciones Existentes**
+
+```powershell
+# Obtener todas las asignaciones permanentes en una suscripción
+$subscriptionId = "12345678-1234-1234-1234-123456789abc"
+$scope = "/subscriptions/$subscriptionId"
+
+$assignments = Get-AzRoleAssignment -Scope $scope
+
+$pimCsv = $assignments | ForEach-Object {
+    # Filtrar solo roles críticos que deberían ser PIM
+    if ($_.RoleDefinitionName -in @('Owner', 'Contributor', 'User Access Administrator')) {
+        [PSCustomObject]@{
+            PrincipalId = $_.ObjectId
+            RoleDefinitionId = ''
+            DirectoryScopeId = ''
+            AzureRoleName = $_.RoleDefinitionName
+            AzureScope = $_.Scope
+            GroupId = ''
+            Reason = "MIGRATION-2025: Conversión a PIM"
+            Duration = 'PT8H'  # 8 horas para roles críticos
+        }
+    }
+}
+
+$pimCsv | Export-Csv "migration_azure_roles_to_pim.csv" -NoTypeInformation
+Write-Host "✓ CSV generado con $($pimCsv.Count) asignaciones a migrar"
+```
+
+### **Validar Scopes Antes de Ejecutar**
+
+```powershell
+# Validar que un scope existe
+function Test-AzureScope {
+    param([string]$Scope)
+    
+    if ($Scope -match '/subscriptions/([^/]+)$') {
+        # Es una suscripción
+        $subId = $matches[1]
+        $sub = Get-AzSubscription -SubscriptionId $subId -ErrorAction SilentlyContinue
+        return ($null -ne $sub)
+    }
+    elseif ($Scope -match '/resourceGroups/([^/]+)$') {
+        # Es un resource group
+        $rg = Get-AzResourceGroup -Id $Scope -ErrorAction SilentlyContinue
+        return ($null -ne $rg)
+    }
+    elseif ($Scope -match '/providers/') {
+        # Es un recurso específico
+        $resource = Get-AzResource -ResourceId $Scope -ErrorAction SilentlyContinue
+        return ($null -ne $resource)
+    }
+    
+    return $false
+}
+
+# Validar CSV antes de ejecutar
+$csv = Import-Csv "assignments.csv"
+foreach ($row in $csv) {
+    if ($row.AzureScope) {
+        $exists = Test-AzureScope -Scope $row.AzureScope
+        if (-not $exists) {
+            Write-Warning "Scope no existe: $($row.AzureScope) para Principal $($row.PrincipalId)"
+        }
+    }
+}
+```
+
+### **Obtener PrincipalId de Usuarios**
+
+```powershell
+# Método 1: Desde email
+$user = Get-AzADUser -UserPrincipalName "juan.perez@contoso.com"
+Write-Host "PrincipalId: $($user.Id)"
+
+# Método 2: Búsqueda por nombre
+$users = Get-AzADUser -SearchString "Juan Perez"
+$users | Select-Object DisplayName, UserPrincipalName, Id
+
+# Método 3: Service Principal (para aplicaciones)
+$sp = Get-AzADServicePrincipal -DisplayName "MyApp"
+Write-Host "PrincipalId: $($sp.Id)"
+
+# Método 4: Grupo
+$group = Get-AzADGroup -DisplayName "DevOps Team"
+Write-Host "PrincipalId: $($group.Id)"
+```
+
+---
+
+## 🎬 Ejecución del Script con Azure RBAC
+
+### **Paso 1: Conectar a Azure y Microsoft Graph**
+
+```powershell
+# Conectar a Azure (para roles RBAC)
+Connect-AzAccount
+
+# Seleccionar suscripción si tienes múltiples
+Set-AzContext -SubscriptionId "12345678-1234-1234-1234-123456789abc"
+
+# Conectar a Microsoft Graph (para roles Entra ID si también los usas)
+Connect-MgGraph -Scopes "RoleEligibilitySchedule.ReadWrite.Directory"
+```
+
+### **Paso 2: Ejecutar en Modo Dry-Run**
+
+```powershell
+# SIEMPRE ejecutar primero en simulación
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments_azure_rbac.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -DryRun
+```
+
+**Salida esperada:**
+```
+=== Validando Prerequisites Azure RBAC ===
+✓ Módulo Az.Resources disponible
+✓ Conectado a Azure
+  Suscripción: Production
+  Cuenta: admin@contoso.com
+✓ Suscripciones accesibles: 3
+
+[MODO DRY-RUN ACTIVO]
+
+[1/5] Procesando Principal: 00000000-0000-0000-0000-000000000001
+[DRY-RUN] Eligibilidad Azure para: 00000000-0000-0000-0000-000000000001
+[DRY-RUN] Rol: Owner | Scope: /subscriptions/... | Duración: PT4H
+
+=== RESUMEN ===
+Total:      5
+Exitoso:    5
+  - Roles Azure: 5
+```
+
+### **Paso 3: Ejecutar en Producción**
+
+```powershell
+# Con confirmación interactiva
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments_azure_rbac.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC
+
+# Sin confirmación (automatización)
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments_azure_rbac.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -Force
+```
+
+### **Paso 4: Validar en Azure Portal**
+
+1. **Azure Portal** > **Subscriptions**
+2. Seleccionar tu suscripción
+3. **Access Control (IAM)** > **Eligible assignments**
+4. Verificar que las eligibilidades fueron creadas
+
+---
+
+## 🔍 Verificación Manual
+
+### **Listar Eligibilidades Existentes**
+
+```powershell
+# Para una suscripción completa
+$scope = "/subscriptions/12345678-1234-1234-1234-123456789abc"
+Get-AzRoleEligibilityScheduleInstance -Scope $scope -Filter "asTarget()"
+
+# Para un usuario específico
+$principalId = "00000000-0000-0000-0000-000000000001"
+Get-AzRoleEligibilityScheduleInstance -Scope $scope -Filter "asTarget()" |
+    Where-Object { $_.PrincipalId -eq $principalId }
+
+# Formatear salida
+Get-AzRoleEligibilityScheduleInstance -Scope $scope -Filter "asTarget()" |
+    Select-Object PrincipalDisplayName, RoleDefinitionDisplayName, Scope, 
+                  @{N='StartDateTime';E={$_.StartDateTime}},
+                  @{N='EndDateTime';E={$_.EndDateTime}} |
+    Format-Table -AutoSize
+```
+
+### **Listar Asignaciones Activas (post-activación)**
+
+```powershell
+# Ver quién tiene roles activos AHORA
+Get-AzRoleAssignmentScheduleInstance -Scope $scope -Filter "asTarget()" |
+    Where-Object { $_.EndDateTime -gt (Get-Date) } |
+    Select-Object PrincipalDisplayName, RoleDefinitionDisplayName, 
+                  @{N='ExpiresAt';E={$_.EndDateTime}} |
+    Format-Table -AutoSize
+```
+
+---
+
+## ⚠️ Problemas Comunes y Soluciones
+
+### **Error: "Scope does not exist"**
+
+```powershell
+# Verificar que el scope es correcto
+$scope = "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-production"
+
+# Probar acceso
+Get-AzResourceGroup -Id $scope
+
+# Si falla, verificar formato:
+# ✅ CORRECTO: /subscriptions/xxx/resourceGroups/yyy
+# ❌ INCORRECTO: /subscription/xxx/resourceGroup/yyy (singular)
+# ❌ INCORRECTO: subscriptions/xxx/... (falta /)
+```
+
+### **Error: "Principal does not have authorization"**
+
+La cuenta ejecutora necesita:
+1. **Owner** o **User Access Administrator** en el scope
+2. O rol personalizado con permisos:
+   - `Microsoft.Authorization/roleEligibilityScheduleRequests/write`
+   - `Microsoft.Authorization/roleAssignments/read`
+
+```powershell
+# Verificar permisos de la cuenta actual
+$currentUser = (Get-AzContext).Account.Id
+$currentUserObjectId = (Get-AzADUser -UserPrincipalName $currentUser).Id
+
+Get-AzRoleAssignment -ObjectId $currentUserObjectId -Scope $scope
+```
+
+### **Error: "Role definition 'XYZ' does not exist"**
+
+```powershell
+# El nombre del rol es case-sensitive
+# ❌ INCORRECTO: "owner", "OWNER"
+# ✅ CORRECTO: "Owner"
+
+# Listar nombre exacto
+Get-AzRoleDefinition -Name "Owner"  # Exacto
+Get-AzRoleDefinition | Where-Object { $_.Name -like "*owner*" }  # Búsqueda
+```
+
+### **Warning: "Duración excede límite"**
+
+Ajustar en la lista blanca del script:
+
+```powershell
+$script:AllowedAzureRoles = @{
+    Tier0 = @{
+        'Owner' = @{ 
+            MaxDuration = 'PT8H'  # Cambiar según tu política
+            RequiresApproval = $true 
+        }
+    }
+}
+```
+
+---
+
+## 📊 Mejores Prácticas
+
+### **1. Principio de Menor Privilegio**
+
+```
+❌ MAL:  Asignar Owner de suscripción completa
+✅ BIEN: Asignar Contributor solo en el Resource Group necesario
+
+❌ MAL:  Asignar Contributor por 90 días
+✅ BIEN: Asignar rol específico (VM Contributor) por 1-7 días
+```
+
+### **2. Granularidad de Scopes**
+
+```powershell
+# Orden de preferencia (de más específico a menos):
+1. Recurso específico:     /subscriptions/.../providers/Microsoft.Compute/virtualMachines/vm-01
+2. Resource Group:         /subscriptions/.../resourceGroups/rg-production
+3. Suscripción:            /subscriptions/...
+4. Management Group:       Solo para escenarios muy específicos
+```
+
+### **3. Duraciones Recomendadas por Rol**
+
+```
+Owner / User Access Admin:         4-8 horas
+Contributor (suscripción):         8-24 horas
+Contributor (resource group):      1-7 días
+Roles específicos (VM, Storage):   1-7 días
+Reader:                            30-90 días
+```
+
+### **4. Auditoría y Monitoreo**
+
+```powershell
+# Configurar alertas para activaciones de roles críticos
+# Azure Portal > Monitor > Alerts > New Alert Rule
+# Condición: "Create role assignment" donde Role = "Owner"
+
+# Revisar audit logs regularmente
+Get-AzLog -ResourceProvider "Microsoft.Authorization" -StartTime (Get-Date).AddDays(-7) |
+    Where-Object { $_.OperationName -like "*roleAssignment*" } |
+    Select-Object TimeStamp, Caller, OperationName, Properties |
+    Export-Csv "azure_rbac_audit.csv"
+```
+
+---
+
+## 🎯 Casos de Uso Reales
+
+### **Caso 1: Despliegue de Aplicación**
+
+**Escenario**: DevOps necesita desplegar una nueva versión por 8 horas.
+
+```csv
+PrincipalId,AzureRoleName,AzureScope,Reason,Duration
+devops-user-id,Contributor,/subscriptions/xxx/resourceGroups/rg-app-prod,DEPLOY-2025-001: Release v2.3.0,PT8H
+```
+
+### **Caso 2: Troubleshooting de VM**
+
+**Escenario**: Sysadmin necesita acceso a VMs por 24 horas.
+
+```csv
+PrincipalId,AzureRoleName,AzureScope,Reason,Duration
+sysadmin-user-id,Virtual Machine Contributor,/subscriptions/xxx/resourceGroups/rg-compute,INC-2025-042: Performance issues VMs,P1D
+```
+
+### **Caso 3: Auditoría de Seguridad**
+
+**Escenario**: Auditor necesita lectura por 30 días.
+
+```csv
+PrincipalId,AzureRoleName,AzureScope,Reason,Duration
+auditor-user-id,Reader,/subscriptions/xxx,AUDIT-Q4-2025: Compliance review,P30D
+```
+
+---
+
+## 🔗 Referencias
+
+- [Azure RBAC Documentation](https://learn.microsoft.com/en-us/azure/role-based-access-control/)
+- [Azure Built-in Roles](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles)
+- [PIM for Azure Resources](https://learn.microsoft.com/en-us/azure/active-directory/privileged-identity-management/pim-resource-roles-overview)
+- [Az.Resources Module](https://learn.microsoft.com/en-us/powershell/module/az.resources/)
+
+---
+
+## ✅ Checklist Pre-Ejecución
+
+Antes de ejecutar el script con `-SupportAzureRBAC`:
+
+- [ ] Módulo `Az.Resources` instalado
+- [ ] Conectado a Azure con `Connect-AzAccount`
+- [ ] Suscripción correcta seleccionada
+- [ ] Scopes validados (existen en Azure)
+- [ ] PrincipalIds correctos (GUIDs válidos)
+- [ ] Nombres de roles exactos (case-sensitive)
+- [ ] Duraciones dentro de límites de política
+- [ ] Justificaciones con tickets de cambio
+- [ ] Dry-Run ejecutado exitosamente
+- [ ] Cuenta ejecutora tiene permisos Owner/UAA
