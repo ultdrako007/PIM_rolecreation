@@ -1,0 +1,618 @@
+# PIM Secure Assignment Script - Guía de Uso
+
+## 📋 Descripción General
+
+Script modular y unificado para automatizar asignaciones de roles elegibles en Azure AD Privileged Identity Management (PIM) con controles de seguridad progresivos.
+
+**Características clave:**
+- ✅ Soporte Entra ID roles + Azure RBAC roles + Grupos PIM
+- ✅ Extracción integrada de roles (no necesitas scripts separados)
+- ✅ Detección de roles heredados por ancestros
+- ✅ Migración automática de permanentes a PIM
+- ✅ Lista blanca por GUID (soporta roles custom)
+
+---
+
+## 🆕 Novedades - Versión Actualizada
+
+### **1. Extracción de Roles Integrada**
+Ya no necesitas un script separado. Usa `-ExtractRoles`:
+
+```powershell
+# Extraer todos los roles de tu tenant
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+```
+
+### **2. Detección de Herencia de Roles**
+Detecta asignaciones permanentes en toda la jerarquía:
+```
+Scope solicitado: /subscriptions/xxx/resourceGroups/rg-prod
+Verifica también: /subscriptions/xxx (heredado desde ancestro)
+```
+
+### **3. Migración Automática**
+```powershell
+# Crea eligibilidad PIM y remueve permanentes en un solo paso
+# Funciona para Entra ID y Azure RBAC
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -AutoMigrate
+```
+
+### **4. Multi-Suscripción (NUEVO)**
+```powershell
+# Procesar TODAS las suscripciones del tenant
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -AllSubscriptions
+
+# Procesar suscripciones específicas
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -SubscriptionIds "sub1","sub2"
+```
+
+### **5. Soporte para Roles Custom**
+Lista blanca ahora usa GUIDs, soporta cualquier rol custom:
+```powershell
+$script:AllowedAzureRoles = @{
+    Tier1 = @{
+        '12345678-custom-role-guid' = @{ Name = 'My-Custom-Role'; MaxDuration = 'P7D' }
+    }
+}
+```
+
+---
+
+## 🚀 Inicio Rápido
+
+### **Opción A: Workflow Completo (Primera Vez)**
+
+```powershell
+# 1. Conectar a servicios
+Connect-MgGraph -Scopes "RoleEligibilitySchedule.ReadWrite.Directory"
+Connect-AzAccount
+
+# 2. Extraer roles disponibles en tu tenant
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# 3. Revisar roles_reference.csv y actualizar lista blanca en el script
+
+# 4. Crear CSV con asignaciones (ver plantilla abajo)
+
+# 5. Validar con Dry-Run
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "assignments.csv" -Phase 1 -SupportAzureRBAC -DryRun
+
+# 6. Ejecutar en producción
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "assignments.csv" -Phase 1 -SupportAzureRBAC -AutoMigrate
+```
+
+---
+
+### **Opción B: Workflow Rápido (Conoces los GUIDs)**
+
+```powershell
+# 1. Conectar
+Connect-MgGraph -Scopes "RoleEligibilitySchedule.ReadWrite.Directory"
+Connect-AzAccount
+
+# 2. Crear CSV con GUIDs conocidos
+
+# 3. Ejecutar
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "assignments.csv" -Phase 1 -SupportAzureRBAC -AutoMigrate -DryRun
+```
+
+---
+
+## 📦 Archivos Incluidos
+
+```
+PIM-SecureAssignment/
+│
+├── PIM-SecureAssignment-ARM.ps1      # Script principal unificado
+├── assignments_template.csv          # Plantilla CSV
+└── README.md                         # Esta guía
+```
+
+**Archivo eliminado**: `Get-RoleGUIDs.ps1` (funcionalidad integrada con `-ExtractRoles`)
+
+---
+
+## 🔒 Fases de Seguridad
+
+### **Fase 0: Controles Críticos** 🚨
+Requisitos mínimos de seguridad antes de cualquier asignación en producción.
+
+**Controles implementados:**
+- ✅ Validación de permisos Graph mínimos
+- ✅ Lista blanca de roles permitidos
+- ✅ Detección de conflictos con roles permanentes
+- ✅ Idempotencia (evita duplicados)
+- ✅ Modo Dry-Run obligatorio en primera ejecución
+- ✅ Auditoría básica
+
+**Casos de uso:**
+- Primera ejecución en ambiente de prueba
+- Validación de CSV antes de producción
+- Entornos con controles básicos
+
+---
+
+### **Fase 1: Validaciones Avanzadas** 🔍
+Añade validaciones estrictas de formato y cumplimiento de políticas.
+
+**Controles adicionales:**
+- ✅ Validación de formato GUID
+- ✅ Validación de duración ISO-8601
+- ✅ Verificación de justificación (ticket requerido)
+- ✅ Límites de duración por Tier
+- ✅ Validación de políticas PIM (MFA/Aprobación)
+- ✅ Auditoría detallada con metadatos
+
+**Casos de uso:**
+- Producción con governance estricto
+- Cumplimiento de frameworks (NIST, CIS)
+- Auditorías frecuentes
+
+---
+
+### **Fase 2: Optimización & Robustez** ⚡
+Añade manejo avanzado de errores y optimizaciones.
+
+**Controles adicionales:**
+- ✅ Reintentos automáticos con backoff exponencial
+- ✅ Manejo de throttling (429)
+- ✅ Nombres descriptivos de roles en logs
+- ✅ Rate limiting inteligente
+- ✅ Reportes JSON estructurados
+
+**Casos de uso:**
+- Asignaciones masivas (100+ usuarios)
+- Ambientes con alta concurrencia
+- Integraciones automatizadas
+
+---
+
+## 📦 Archivos Incluidos
+
+```
+PIM-SecureAssignment/
+│
+├── PIM-SecureAssignment.ps1      # Script principal
+├── Connect-PIMGraph.ps1           # Script de conexión
+├── assignments_template.csv       # Plantilla CSV
+└── README.md                      # Esta guía
+```
+
+---
+
+## 🚀 Inicio Rápido
+
+### **1. Instalación de Módulos**
+
+```powershell
+Install-Module Microsoft.Graph.Identity.Governance -Scope CurrentUser
+Install-Module Microsoft.Graph.Identity.SignIns -Scope CurrentUser
+```
+
+### **2. Conexión a Microsoft Graph**
+
+```powershell
+# Para Fase 0 (permisos mínimos)
+.\Connect-PIMGraph.ps1 -Phase 0
+
+# Para Fase 1
+.\Connect-PIMGraph.ps1 -Phase 1
+
+# Para Fase 2
+.\Connect-PIMGraph.ps1 -Phase 2
+```
+
+### **Preparar CSV**
+
+**IMPORTANTE**: Usa `AzureRoleDefinitionId` con GUID, no nombres de roles.
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+# ENTRA ID ROLE
+guid-usuario,62e90394-69f5-4237-9190-012177145e10,/,,,INC-12345: Justificación,PT8H
+
+# AZURE RBAC ROLE (usar GUID, no nombre)
+guid-usuario,,,8e3af657-a8ff-443c-a75c-2fe8c4bcb635,/subscriptions/xxx,,CHG-67890: Justificación,PT4H
+
+# GRUPO PIM
+guid-usuario,,,,,grupo-pim-guid,TASK-11111: Justificación,P30D
+```
+
+**Columnas Azure RBAC:**
+- `AzureRoleDefinitionId`: GUID del rol (obtener con `-ExtractRoles`)
+- `AzureScope`: Ruta completa ARM del scope
+
+**Cómo obtener GUIDs:**
+```powershell
+# Método 1: Extracción integrada
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC
+
+# Método 2: Comando directo
+Get-AzRoleDefinition -Name "Contributor" | Select-Object Name, Id
+```
+
+---
+
+### **4. Ejecutar en Modo Dry-Run**
+
+```powershell
+# SIEMPRE ejecutar primero en modo simulación
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "assignments.csv" -Phase 1 -SupportAzureRBAC -DryRun
+```
+
+**Salida esperada**:
+```
+[1/3] Procesando Principal: guid-usuario
+Verificando asignaciones en 2 scopes (incluyendo ancestros)
+✓ Sin conflictos detectados
+[DRY-RUN] Eligibilidad Azure: Owner para guid-usuario
+[DRY-RUN] Scope: /subscriptions/xxx | Duración: PT4H
+
+=== RESUMEN ===
+Total:    3
+Exitoso:  3
+  - Azure: 2
+  - Entra: 1
+```
+
+---
+
+### **5. Ejecutar en Producción**
+
+```powershell
+# Con migración automática de permanentes
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -AutoMigrate
+
+# Sin confirmación (automatización)
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -AutoMigrate `
+    -Force
+```
+
+---
+
+## 📊 Modos de Operación
+
+### **Modo 1: Extracción de Roles**
+
+```powershell
+# Solo listar en consola
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles
+
+# Con Azure RBAC
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC
+
+# Exportar a CSV
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# CSV personalizado
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv -RolesOutputPath "custom.csv"
+```
+
+**Resultado**: 
+- Lista de todos los roles con GUIDs en consola
+- Configuración lista blanca lista para copiar
+- CSV de referencia (si usas `-ExportRolesCsv`)
+
+---
+
+### **Modo 2: Procesamiento de Asignaciones**
+
+```powershell
+# Fase 0 - Controles mínimos
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 0 -SupportAzureRBAC -DryRun
+
+# Fase 1 - Validaciones avanzadas (recomendado)
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -AutoMigrate
+
+# Fase 2 - Con reintentos y optimizaciones
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 2 -SupportAzureRBAC -AutoMigrate -Force
+```
+
+---
+
+## 🎯 Parámetros Principales
+
+| Parámetro | Descripción | Valores | Default |
+|-----------|-------------|---------|---------|
+| `-ExtractRoles` | Modo extracción de roles | Switch | - |
+| `-CsvPath` | Ruta al CSV de asignaciones | String | Requerido si no `-ExtractRoles` |
+| `-Phase` | Fase de controles | 0, 1, 2 | Requerido si no `-ExtractRoles` |
+| `-SupportAzureRBAC` | Habilitar roles Azure ARM | Switch | `$false` |
+| `-AutoMigrate` | Migración automática de permanentes | Switch | `$false` |
+| `-DryRun` | Modo simulación | Switch | `$false` |
+| `-Force` | Sin confirmaciones | Switch | `$false` |
+| `-ExportRolesCsv` | Exportar roles a CSV | Switch | `$false` |
+| `-RolesOutputPath` | Ruta CSV de roles | String | `"roles_reference.csv"` |
+
+---
+
+## 🔍 Casos de Uso Comunes
+
+### **Caso 1: Descubrir Roles Custom**
+
+```powershell
+# Extraer todos los roles
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# Filtrar roles custom
+$roles = Import-Csv "roles_reference.csv"
+$customRoles = $roles | Where-Object { $_.IsCustom -eq 'True' -and $_.Type -eq 'Azure RBAC' }
+
+Write-Host "Roles Custom encontrados:" -ForegroundColor Cyan
+$customRoles | Format-Table DisplayName, RoleDefinitionId
+
+# Agregar a lista blanca del script
+foreach ($role in $customRoles) {
+    Write-Host "'$($role.RoleDefinitionId)' = @{ Name = '$($role.DisplayName)'; MaxDuration = 'P7D'; RequiresApproval = `$true }"
+}
+```
+
+---
+
+### **Caso 2: Migración Masiva con Detección de Herencia**
+
+```powershell
+# Paso 1: Identificar usuarios con Owner en suscripción
+$ownerRoleId = "8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
+$subScope = "/subscriptions/xxx"
+
+$owners = Get-AzRoleAssignment -Scope $subScope -RoleDefinitionId $ownerRoleId
+
+# Paso 2: Generar CSV
+$migrations = $owners | ForEach-Object {
+    [PSCustomObject]@{
+        PrincipalId = $_.ObjectId
+        RoleDefinitionId = ''
+        DirectoryScopeId = ''
+        AzureRoleDefinitionId = $ownerRoleId
+        AzureScope = $subScope
+        GroupId = ''
+        Reason = "MIGRATION-2025: Conversión Owner a PIM"
+        Duration = 'PT4H'
+    }
+}
+
+$migrations | Export-Csv "migration_owners.csv" -NoTypeInformation
+
+# Paso 3: Dry-Run para ver herencia
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "migration_owners.csv" -Phase 1 -SupportAzureRBAC -AutoMigrate -DryRun
+
+# El script detectará automáticamente:
+# - Asignaciones en el scope exacto
+# - Asignaciones heredadas desde management groups
+# - Asignaciones redundantes en RGs hijos
+
+# Paso 4: Ejecutar migración
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "migration_owners.csv" -Phase 1 -SupportAzureRBAC -AutoMigrate
+```
+
+---
+
+### **Caso 3: Validar CSV Antes de Ejecutar**
+
+```powershell
+# Extraer roles de referencia
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# Validar GUIDs en tu CSV
+$csv = Import-Csv "assignments.csv"
+$rolesRef = Import-Csv "roles_reference.csv"
+
+$errors = 0
+foreach ($row in $csv) {
+    if ($row.AzureRoleDefinitionId) {
+        $exists = $rolesRef | Where-Object { 
+            $_.RoleDefinitionId -eq $row.AzureRoleDefinitionId 
+        }
+        
+        if (-not $exists) {
+            Write-Host "❌ GUID inválido: $($row.AzureRoleDefinitionId)" -ForegroundColor Red
+            $errors++
+        }
+        else {
+            Write-Host "✓ $($exists.DisplayName)" -ForegroundColor Green
+        }
+    }
+}
+
+if ($errors -eq 0) {
+    Write-Host "`n✓ CSV válido. Listo para ejecutar." -ForegroundColor Green
+}
+else {
+    Write-Host "`n⚠️  $errors errores encontrados. Corregir antes de ejecutar." -ForegroundColor Yellow
+}
+```
+
+---
+
+## 📊 Formato de Duración (ISO-8601)
+
+| Duración | Formato | Descripción |
+|----------|---------|-------------|
+| 8 horas | `PT8H` | Roles críticos (Global Admin) |
+| 1 día | `P1D` | Roles administrativos |
+| 7 días | `P7D` | Roles operativos |
+| 30 días | `P30D` | Roles de lectura |
+| 90 días | `P90D` | Grupos de acceso |
+
+**Sintaxis:**
+- `P` = Period (inicio)
+- `T` = Time separator (separa días de horas)
+- `Y` = Years, `M` = Months, `D` = Days
+- `H` = Hours, `M` = Minutes, `S` = Seconds
+
+Ejemplos válidos:
+- `P1Y` = 1 año
+- `P6M` = 6 meses
+- `P1DT12H` = 1 día y 12 horas
+- `PT30M` = 30 minutos
+
+---
+
+## 🎯 Lista Blanca de Roles
+
+Editar en el script la variable `$script:AllowedRoles`:
+
+```powershell
+$script:AllowedRoles = @{
+    Tier0 = @{
+        '62e90394-69f5-4237-9190-012177145e10' = @{ 
+            Name = 'Global Administrator'
+            MaxDuration = 'PT8H'
+            RequiresApproval = $true 
+        }
+    }
+}
+```
+
+### Roles Comunes
+
+| Rol | GUID | Tier Sugerido |
+|-----|------|---------------|
+| Global Administrator | `62e90394-69f5-4237-9190-012177145e10` | Tier0 |
+| Security Administrator | `194ae4cb-b126-40b2-bd5b-6091b380977d` | Tier0 |
+| User Administrator | `fe930be7-5e62-47db-91af-98c3a49a38b1` | Tier1 |
+| SharePoint Administrator | `f28a1f50-f6e7-4571-818b-6a12f2af6b6c` | Tier1 |
+| Helpdesk Administrator | `729827e3-9c14-49f7-bb1b-9608f156bbb8` | Tier2 |
+
+**Para obtener todos los roles:**
+```powershell
+Get-MgDirectoryRole | Select-Object DisplayName, RoleTemplateId
+```
+
+---
+
+## 📈 Interpretación de Reportes
+
+### CSV de Auditoría
+
+```csv
+Timestamp,PrincipalId,RoleOrGroup,Action,Status,Details,RequestId,ExecutedBy,CsvHash,Phase,DryRun
+2025-10-17T10:30:00.000Z,guid-1,guid-rol,EligibilityCreated,Success,INC-12345,req-123,admin@contoso.com,abc123def456,1,False
+```
+
+### JSON de Auditoría
+
+```json
+{
+  "Metadata": {
+    "CsvHash": "abc123def456...",
+    "Phase": 1,
+    "DryRun": false,
+    "ExecutedBy": "admin@contoso.com",
+    "ExecutedAt": "2025-10-17T10:30:00.000Z"
+  },
+  "Statistics": {
+    "Total": 10,
+    "Success": 8,
+    "Failed": 1,
+    "Skipped": 1,
+    "Conflicts": 0
+  },
+  "Entries": [...]
+}
+```
+
+---
+
+## ⚠️ Troubleshooting
+
+### Error: "Falta permiso requerido"
+
+**Solución:**
+1. Verificar que la cuenta tiene permisos para consentir delegados
+2. Solicitar pre-aprobación a Global Admin
+3. Usar cuenta de servicio con permisos pre-otorgados
+
+### Error: "ROL BLOQUEADO: no está en lista blanca"
+
+**Solución:**
+Agregar el rol a `$script:AllowedRoles` después de:
+1. Validar que el rol es necesario
+2. Definir duración máxima apropiada
+3. Configurar política PIM con MFA/Aprobación
+
+### Error: "CONFLICTO: tiene asignación permanente activa"
+
+**Solución:**
+1. Revisar asignación permanente manualmente
+2. Decidir si migrar a PIM o mantener permanente
+3. Revocar rol permanente antes de crear eligibilidad
+
+### Warning: "Duración excede límite"
+
+**Solución:**
+Ajustar duración en CSV según límites definidos en lista blanca:
+- Tier0: Máximo 8 horas
+- Tier1: Máximo 1 día
+- Tier2: Máximo 7-30 días
+
+---
+
+## 🔐 Mejores Prácticas
+
+### Antes de Ejecutar
+
+1. ✅ **Validar políticas PIM** de roles target:
+   ```powershell
+   Get-MgPolicyRoleManagementPolicyAssignment -Filter "scopeType eq 'DirectoryRole'"
+   ```
+
+2. ✅ **Revisar asignaciones existentes**:
+   ```powershell
+   Get-MgRoleManagementDirectoryRoleEligibilitySchedule -Filter "principalId eq 'guid'"
+   ```
+
+3. ✅ **Ejecutar en ambiente de prueba** primero
+
+4. ✅ **Usar Dry-Run** para validar CSV
+
+### Durante Ejecución
+
+5. ✅ Monitorear logs en tiempo real
+6. ✅ Validar estadísticas intermedias
+7. ✅ Detener si hay muchos errores (>10%)
+
+### Después de Ejecutar
+
+8. ✅ **Revisar reportes de auditoría**
+9. ✅ **Validar en Azure Portal** que eligibilidades fueron creadas
+10. ✅ **Archivar logs** con hash del CSV para trazabilidad
+
+---
+
+## 📚 Referencias
+
+- [Microsoft Graph API - PIM](https://learn.microsoft.com/en-us/graph/api/resources/privilegedidentitymanagementv3-overview)
+- [ISO 8601 Duration](https://en.wikipedia.org/wiki/ISO_8601#Durations)
+- [Azure AD Built-in Roles](https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/permissions-reference)
+- [PIM Best Practices](https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-deployment-plan)
+
+---
+
+## 🆘 Soporte
+
+Para issues o mejoras:
+1. Revisar logs de ejecución
+2. Exportar JSON de auditoría
+3. Documentar error con contexto (Fase, CSV usado, permisos)
+
+---
+
+## 📝 Changelog
+
+### v1.0.0 - 2025-10-17
+- ✅ Implementación inicial con 3 fases
+- ✅ Validaciones críticas de seguridad
+- ✅ Modo Dry-Run
+- ✅ Auditoría completa
+- ✅ Manejo de throttling
+- ✅ Idempotencia
