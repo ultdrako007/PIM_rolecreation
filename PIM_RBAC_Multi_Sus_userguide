@@ -1,0 +1,731 @@
+# Guía Completa - Azure RBAC con PIM (VERSIÓN CORREGIDA)
+
+## 🆕 Nueva Funcionalidad: Extracción Integrada de Roles
+
+El script ahora incluye extracción de roles incorporada. **No necesitas un script separado**.
+
+### **Uso Básico**
+
+```powershell
+# Extraer solo roles de Entra ID
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles
+
+# Extraer roles de Entra ID + Azure RBAC
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC
+
+# Extraer y exportar a CSV
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# Exportar a ruta personalizada
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv -RolesOutputPath "mis_roles.csv"
+```
+
+### **Salida de Ejemplo**
+
+```
+╔════════════════════════════════════════════════╗
+║  Extractor de RoleDefinitionId (GUIDs)        ║
+╚════════════════════════════════════════════════╝
+
+=== ROLES DE ENTRA ID (Azure AD) ===
+Roles de Entra ID encontrados: 89
+
+Application Administrator | 9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3
+Global Administrator | 62e90394-69f5-4237-9190-012177145e10
+Security Administrator | 194ae4cb-b126-40b2-bd5b-6091b380977d
+
+--- ROLES CRÍTICOS DE ENTRA ID ---
+'62e90394-69f5-4237-9190-012177145e10' = @{ Name = 'Global Administrator'; MaxDuration = 'PT8H'; RequiresApproval = $true }
+'194ae4cb-b126-40b2-bd5b-6091b380977d' = @{ Name = 'Security Administrator'; MaxDuration = 'PT8H'; RequiresApproval = $true }
+
+=== ROLES DE AZURE RBAC ===
+Suscripción activa: Production
+Roles de Azure encontrados: 147
+
+Owner | 8e3af657-a8ff-443c-a75c-2fe8c4bcb635
+Contributor | b24988ac-6180-42a0-ab88-20f7382dd24c
+Reader | acdd72a7-3385-48ef-bd42-f606fba81ae7
+DevOps-Custom [CUSTOM] | 12345678-abcd-efgh-ijkl-123456789012
+
+--- ROLES CUSTOM DETECTADOS ---
+'12345678-abcd-efgh-ijkl-123456789012' = @{ Name = 'DevOps-Custom'; MaxDuration = 'P1D'; RequiresApproval = $true }  # CUSTOM ROLE
+
+╔════════════════════════════════════════════════╗
+║  CONFIGURACIÓN LISTA BLANCA (Copiar al script)║
+╚════════════════════════════════════════════════╝
+
+# ENTRA ID ROLES
+$script:AllowedEntraRoles = @{
+    Tier0 = @{
+        '62e90394-69f5-4237-9190-012177145e10' = @{ Name = 'Global Administrator'; MaxDuration = 'PT8H'; RequiresApproval = $true }
+    }
+}
+
+# AZURE RBAC ROLES
+$script:AllowedAzureRoles = @{
+    Tier0 = @{
+        '8e3af657-a8ff-443c-a75c-2fe8c4bcb635' = @{ Name = 'Owner'; MaxDuration = 'PT4H'; RequiresApproval = $true }
+    }
+}
+```
+
+---
+
+## 🔥 Correcciones Implementadas
+
+### **1. Uso de RoleDefinitionId (GUID) en lugar de nombres**
+**Problema anterior**: La lista blanca usaba nombres de roles (`"Owner"`, `"Contributor"`) que pueden variar con custom roles.
+
+**Solución**: Ahora usamos GUIDs exclusivamente:
+```powershell
+# ❌ ANTES (incorrecto)
+$script:AllowedAzureRoles = @{
+    Tier0 = @{
+        'Owner' = @{ MaxDuration = 'PT4H' }
+    }
+}
+
+# ✅ AHORA (correcto)
+$script:AllowedAzureRoles = @{
+    Tier0 = @{
+        '8e3af657-a8ff-443c-a75c-2fe8c4bcb635' = @{ 
+            Name = 'Owner'  # Solo para logs
+            MaxDuration = 'PT4H' 
+        }
+    }
+}
+```
+
+---
+
+### **2. Detección de Roles Heredados por Ancestros**
+**Problema anterior**: Solo verificaba el scope exacto, no detectaba asignaciones heredadas desde parent scopes.
+
+**Solución**: Ahora camina la jerarquía completa:
+```
+Scope solicitado: /subscriptions/xxx/resourceGroups/rg-prod
+
+Verifica también:
+  ↑ /subscriptions/xxx (suscripción)
+  ↑ /providers/Microsoft.Management/managementGroups/mg-prod (si aplica)
+```
+
+**Ejemplo práctico**:
+```powershell
+# Usuario tiene Owner en suscripción
+Get-AzRoleAssignment -ObjectId $userId -Scope "/subscriptions/xxx"
+# RoleName: Owner
+
+# Script detectará que intentar asignar Owner en un RG es redundante
+# Scope solicitado: /subscriptions/xxx/resourceGroups/rg-app
+# Conflicto heredado desde: /subscriptions/xxx
+```
+
+---
+
+### **3. Migración Automática Controlada**
+**Problema anterior**: Detectaba conflictos pero requería migración manual.
+
+**Solución**: Nuevo parámetro `-AutoMigrate`:
+
+```powershell
+# Flujo automático:
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "migrations.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -AutoMigrate  # <-- NUEVO
+
+# Proceso:
+# 1. Crea eligibilidad PIM
+# 2. Espera confirmación de creación
+# 3. Remueve asignación(es) permanente(s)
+# 4. Registra todo en auditoría
+```
+
+**Seguridad**: En modo `-DryRun`, simula sin ejecutar:
+```
+[DRY-RUN] Se crearía eligibilidad
+[DRY-RUN] Se removerían 2 asignaciones permanentes:
+  → /subscriptions/xxx (Owner)
+  → /subscriptions/xxx/resourceGroups/rg-prod (heredado)
+```
+
+---
+
+## 📋 Estructura Actualizada del CSV
+
+### **Columnas Requeridas**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+```
+
+| Columna | Tipo | Descripción | Ejemplo |
+|---------|------|-------------|---------|
+| `PrincipalId` | GUID | ID del usuario/SP | `00000000-0000-0000-0000-000000000001` |
+| `AzureRoleDefinitionId` | GUID | **ID del rol Azure** (no nombre) | `8e3af657-a8ff-443c-a75c-2fe8c4bcb635` |
+| `AzureScope` | String | Scope ARM completo | `/subscriptions/xxx/resourceGroups/yyy` |
+| `Reason` | String | Justificación con ticket | `CHG-12345: Migración proyecto X` |
+| `Duration` | ISO-8601 | Duración de eligibilidad | `PT8H`, `P1D`, `P30D` |
+
+---
+
+## 🔧 Workflow Completo Actualizado
+
+### **Paso 1: Extraer Roles de tu Tenant**
+
+```powershell
+# Conectar a ambos servicios
+Connect-MgGraph -Scopes "RoleManagement.Read.Directory"
+Connect-AzAccount
+
+# Extraer roles y exportar a CSV
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+```
+
+**Resultado**: Archivo `roles_reference.csv` con todos los roles disponibles.
+
+---
+
+### **Paso 2: Actualizar Lista Blanca en el Script**
+
+Copia los GUIDs de la salida del comando anterior y actualiza las variables en el script:
+
+```powershell
+# Editar el script
+# Buscar: $script:AllowedEntraRoles
+# Buscar: $script:AllowedAzureRoles
+
+# Agregar roles necesarios con sus GUIDs
+$script:AllowedAzureRoles = @{
+    Tier1 = @{
+        '12345678-abcd-efgh-ijkl-123456789012' = @{  # Tu rol custom
+            Name = 'DevOps-Custom'
+            MaxDuration = 'P7D'
+            RequiresApproval = $true
+        }
+    }
+}
+```
+
+---
+
+### **Paso 3: Crear CSV con GUIDs**
+
+```csv
+PrincipalId,AzureRoleDefinitionId,AzureScope,Reason,Duration
+user-guid,8e3af657-a8ff-443c-a75c-2fe8c4bcb635,/subscriptions/xxx,CHG-001,PT4H
+```
+
+---
+
+### **Paso 4: Validar con Dry-Run**
+
+```powershell
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -DryRun
+```
+
+---
+
+### **Paso 5: Ejecutar en Producción**
+
+```powershell
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -AutoMigrate
+```
+
+---
+
+## 🎯 Ejemplos Prácticos Actualizados
+
+### **Ejemplo 1: Primera Vez - Descubrir Roles Custom**
+
+```powershell
+# Paso 1: Extraer para ver qué roles custom tienes
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC
+
+# Salida mostrará:
+# --- ROLES CUSTOM DETECTADOS ---
+# '12345678-abcd-...' = @{ Name = 'My-Custom-Role'; ... }
+
+# Paso 2: Buscar detalles del rol custom
+$customRole = Get-AzRoleDefinition -Id "12345678-abcd-efgh-ijkl-123456789012"
+$customRole | Select-Object Name, Id, Description, Actions, NotActions
+
+# Paso 3: Decidir si agregarlo a lista blanca
+# Si es necesario, editar script y agregar a AllowedAzureRoles
+```
+
+---
+
+### **Ejemplo 2: Actualización de Lista Blanca Automatizada**
+
+```powershell
+# Script para generar lista blanca desde extracción
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# Procesar CSV para generar configuración
+$roles = Import-Csv "roles_reference.csv"
+
+# Filtrar solo roles que quieres permitir
+$allowedRoleNames = @('Owner', 'Contributor', 'Reader', 'My-Custom-Role')
+
+$config = @"
+`$script:AllowedAzureRoles = @{
+    Tier0 = @{
+"@
+
+$tier0Roles = $roles | Where-Object { 
+    $_.Type -eq 'Azure RBAC' -and 
+    $_.DisplayName -in @('Owner', 'User Access Administrator') 
+}
+
+foreach ($role in $tier0Roles) {
+    $config += "`n        '$($role.RoleDefinitionId)' = @{ Name = '$($role.DisplayName)'; MaxDuration = 'PT4H'; RequiresApproval = `$true }"
+}
+
+$config += "`n    }`n}"
+
+Write-Host $config
+
+# Copiar y pegar en el script
+```
+
+---
+
+### **Ejemplo 3: Validar Roles Antes de CSV**
+
+```powershell
+# Extraer roles disponibles
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# Validar que GUIDs en tu CSV existen
+$csv = Import-Csv "assignments.csv"
+$rolesRef = Import-Csv "roles_reference.csv"
+
+foreach ($row in $csv) {
+    if ($row.AzureRoleDefinitionId) {
+        $exists = $rolesRef | Where-Object { 
+            $_.RoleDefinitionId -eq $row.AzureRoleDefinitionId 
+        }
+        
+        if (-not $exists) {
+            Write-Warning "GUID no existe: $($row.AzureRoleDefinitionId) para Principal $($row.PrincipalId)"
+        }
+        else {
+            Write-Host "✓ $($row.AzureRoleDefinitionId) = $($exists.DisplayName)" -ForegroundColor Green
+        }
+    }
+}
+```
+
+---
+
+## 📊 Comparación: Antes vs Ahora
+
+| Aspecto | Antes | Ahora |
+|---------|-------|-------|
+| **Extracción de roles** | Script separado | Integrado con `-ExtractRoles` |
+| **Lista blanca** | Nombres de roles | GUIDs de roles |
+| **Detección conflictos** | Solo scope exacto | Scope + ancestros |
+| **Migración** | Manual | Automática con `-AutoMigrate` |
+| **Roles custom** | Requerían búsqueda manual | Detectados automáticamente |
+| **Validación** | Básica | Completa con herencia |
+
+---
+
+## 🚀 Comandos de Referencia Rápida
+
+```powershell
+# ============================================
+# EXTRACCIÓN DE ROLES
+# ============================================
+
+# Solo listar en consola
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC
+
+# Exportar a CSV
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# ============================================
+# PROCESAMIENTO - SUSCRIPCIÓN ÚNICA
+# ============================================
+
+# Dry-Run sin migración automática
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -DryRun
+
+# Producción con AutoMigrate
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -AutoMigrate
+
+# ============================================
+# PROCESAMIENTO - MULTI-SUSCRIPCIÓN (NUEVO)
+# ============================================
+
+# Todas las suscripciones del tenant
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -AllSubscriptions -DryRun
+
+# Suscripciones específicas
+$subs = @("sub-id-1", "sub-id-2", "sub-id-3")
+.\PIM-SecureAssignment-ARM.ps1 -CsvPath "file.csv" -Phase 1 -SupportAzureRBAC -SubscriptionIds $subs -AutoMigrate
+
+# ============================================
+# VALIDACIONES
+# ============================================
+
+# Verificar GUID de rol específico
+Get-AzRoleDefinition -Id "8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
+
+# Buscar rol por nombre (obtener GUID)
+Get-AzRoleDefinition -Name "Contributor" | Select-Object Name, Id
+
+# Ver asignaciones de un usuario en TODAS las suscripciones
+$userId = "user-guid"
+Get-AzSubscription | ForEach-Object {
+    Set-AzContext -SubscriptionId $_.Id | Out-Null
+    Get-AzRoleAssignment -ObjectId $userId
+}
+
+# Ver eligibilidades de un usuario
+Get-AzRoleEligibilityScheduleInstance -Scope "/subscriptions/xxx" -Filter "asTarget()" |
+    Where-Object { $_.PrincipalId -eq "user-guid" }
+```
+
+---
+
+## 🔧 Obtener GUIDs de Roles
+
+---
+
+## 🎯 Casos de Uso Actualizados
+
+### **Caso 1: Migración con Detección de Ancestros**
+
+**Escenario**: Usuario tiene Owner en suscripción, queremos dar Contributor solo en un RG.
+
+```powershell
+# 1. Verificar estado actual
+$userId = "00000000-0000-0000-0000-000000000001"
+Get-AzRoleAssignment -ObjectId $userId
+
+# Salida:
+# RoleName: Owner
+# Scope: /subscriptions/12345678-1234-1234-1234-123456789abc
+
+# 2. Crear CSV
+# Nota: Owner en suscripción incluye Contributor en RG por herencia
+```
+
+```csv
+PrincipalId,AzureRoleDefinitionId,AzureScope,Reason,Duration
+00000000-0000-0000-0000-000000000001,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/rg-app,DOWNGRADE-001: Reducir permisos a RG específico,P7D
+```
+
+**3. Ejecutar con AutoMigrate**:
+```powershell
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "downgrade.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -AutoMigrate `
+    -DryRun  # Primero simular
+```
+
+**Salida esperada**:
+```
+[1/1] Procesando Principal: 00000000-0000-0000-0000-000000000001
+Verificando asignaciones en 2 scopes (incluyendo ancestros)
+CONFLICTO AZURE: Principal tiene 1 asignación permanente de 'Owner'
+  → Scope: /subscriptions/12345678-1234-1234-1234-123456789abc (HEREDADO desde ancestro)
+
+Modo AutoMigrate: Creando eligibilidad y removiendo permanentes...
+[DRY-RUN] Se crearía eligibilidad: Contributor en /subscriptions/.../resourceGroups/rg-app
+[DRY-RUN] Se removería asignación permanente: Owner en /subscriptions/xxx
+```
+
+---
+
+### **Caso 2: Onboarding con Roles Custom**
+
+**Escenario**: Tienes rol custom "DevOps-Limited" en tu tenant.
+
+**1. Obtener GUID del rol custom**:
+```powershell
+# Listar custom roles
+Get-AzRoleDefinition | Where-Object { $_.IsCustom -eq $true } | 
+    Select-Object Name, Id
+
+# Salida:
+# Name             Id
+# ----             --
+# DevOps-Limited   12345678-abcd-efgh-ijkl-123456789012
+```
+
+**2. Agregar a lista blanca del script**:
+```powershell
+$script:AllowedAzureRoles = @{
+    Tier1 = @{
+        # ... otros roles ...
+        '12345678-abcd-efgh-ijkl-123456789012' = @{ 
+            Name = 'DevOps-Limited'
+            MaxDuration = 'P7D'
+            RequiresApproval = $false 
+        }
+    }
+}
+```
+
+**3. Usar en CSV**:
+```csv
+PrincipalId,AzureRoleDefinitionId,AzureScope,Reason,Duration
+user@contoso.com,12345678-abcd-efgh-ijkl-123456789012,/subscriptions/xxx/resourceGroups/rg-dev,ONBOARD-DEVOPS-2025,P7D
+```
+
+---
+
+### **Caso 3: Validar Herencia Antes de Ejecutar**
+
+**Script de Pre-Validación**:
+
+```powershell
+<#
+.SYNOPSIS
+    Valida si hay conflictos por herencia antes de ejecutar PIM
+#>
+
+param(
+    [string]$CsvPath,
+    [string]$TargetSubscription
+)
+
+$csv = Import-Csv $CsvPath
+$conflicts = @()
+
+foreach ($row in $csv) {
+    if (-not $row.AzureRoleDefinitionId) { continue }
+    
+    # Obtener ancestros del scope
+    $scope = $row.AzureScope
+    $ancestors = @()
+    
+    while ($scope -match '^(.+)/[^/]+$') {
+        $scope = $matches[1]
+        $ancestors += $scope
+    }
+    
+    Write-Host "Verificando $($row.PrincipalId) en $($ancestors.Count) ancestros..." -ForegroundColor Cyan
+    
+    # Verificar cada ancestro
+    foreach ($ancestorScope in $ancestors) {
+        $assignments = Get-AzRoleAssignment -ObjectId $row.PrincipalId -Scope $ancestorScope -ErrorAction SilentlyContinue |
+            Where-Object { $_.RoleDefinitionId -eq $row.AzureRoleDefinitionId }
+        
+        if ($assignments) {
+            $conflicts += [PSCustomObject]@{
+                PrincipalId = $row.PrincipalId
+                RoleId = $row.AzureRoleDefinitionId
+                RequestedScope = $row.AzureScope
+                ConflictScope = $ancestorScope
+                IsInherited = ($ancestorScope -ne $row.AzureScope)
+            }
+            
+            Write-Host "  ⚠️  CONFLICTO en ancestro: $ancestorScope" -ForegroundColor Yellow
+        }
+    }
+}
+
+if ($conflicts.Count -gt 0) {
+    Write-Host "`n⚠️  $($conflicts.Count) conflictos detectados" -ForegroundColor Red
+    $conflicts | Format-Table -AutoSize
+    Write-Host "`nRecomendación: Ejecutar con -AutoMigrate para resolver automáticamente" -ForegroundColor Yellow
+}
+else {
+    Write-Host "`n✓ No se detectaron conflictos. Seguro para ejecutar." -ForegroundColor Green
+}
+```
+
+---
+
+## 📊 Tabla de GUIDs de Roles Comunes
+
+### **Azure RBAC Built-In Roles**
+
+| Rol | RoleDefinitionId (GUID) | Tier | Duración Max Recomendada |
+|-----|------------------------|------|-------------------------|
+| **Owner** | `8e3af657-a8ff-443c-a75c-2fe8c4bcb635` | Tier0 | PT4H |
+| **User Access Administrator** | `18d7d88d-d35e-4fb5-a5c3-7773c20a72d9` | Tier0 | PT4H |
+| **Contributor** | `b24988ac-6180-42a0-ab88-20f7382dd24c` | Tier1 | PT8H |
+| **Reader** | `acdd72a7-3385-48ef-bd42-f606fba81ae7` | Tier2 | P30D |
+| **Virtual Machine Contributor** | `9980e02c-c2be-4d73-94e8-173b1dc7cf3c` | Tier1 | P1D |
+| **Storage Account Contributor** | `17d1049b-9a84-46fb-8f53-869881c3d3ab` | Tier1 | P1D |
+| **Network Contributor** | `4d97b98b-1d4f-4787-a291-c67834d212e7` | Tier1 | P1D |
+| **Security Admin** | `fb1c8493-542b-48eb-b624-b4c8fea62acd` | Tier0 | PT8H |
+| **Monitoring Reader** | `43d0d8ad-25c7-4714-9337-8ba259a9fe05` | Tier2 | P30D |
+| **Log Analytics Reader** | `73c42c96-874c-492b-b04d-ab87d138a893` | Tier2 | P30D |
+| **Backup Operator** | `00c29273-979b-4161-815c-10b084fb9324` | Tier1 | P7D |
+| **DevTest Labs User** | `76283e04-6283-4c54-8f91-bcf1374a3c64` | Tier2 | P30D |
+
+### **Entra ID Roles (Referencia)**
+
+| Rol | RoleTemplateId (GUID) | Tier |
+|-----|----------------------|------|
+| **Global Administrator** | `62e90394-69f5-4237-9190-012177145e10` | Tier0 |
+| **Security Administrator** | `194ae4cb-b126-40b2-bd5b-6091b380977d` | Tier0 |
+| **User Administrator** | `fe930be7-5e62-47db-91af-98c3a49a38b1` | Tier1 |
+| **SharePoint Administrator** | `f28a1f50-f6e7-4571-818b-6a12f2af6b6c` | Tier1 |
+| **Exchange Administrator** | `29232cdf-9323-42fd-ade2-1d097af3e4de` | Tier1 |
+| **Helpdesk Administrator** | `729827e3-9c14-49f7-bb1b-9608f156bbb8` | Tier2 |
+
+---
+
+## 🚀 Ejecución con Nuevas Funcionalidades
+
+### **Flujo Recomendado**
+
+```powershell
+# PASO 1: Obtener GUIDs de roles
+.\Get-RoleGUIDs.ps1 -ExportCsv
+
+# PASO 2: Actualizar lista blanca en el script con GUIDs correctos
+
+# PASO 3: Conectar
+Connect-MgGraph -Scopes "RoleEligibilitySchedule.ReadWrite.Directory"
+Connect-AzAccount
+Set-AzContext -SubscriptionId "xxx"
+
+# PASO 4: Dry-Run SIN AutoMigrate (ver conflictos)
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -DryRun
+
+# PASO 5: Dry-Run CON AutoMigrate (simular migración)
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -AutoMigrate `
+    -DryRun
+
+# PASO 6: Ejecutar en producción
+.\PIM-SecureAssignment-ARM.ps1 `
+    -CsvPath "assignments.csv" `
+    -Phase 1 `
+    -SupportAzureRBAC `
+    -AutoMigrate
+```
+
+---
+
+## ⚠️ Consideraciones de Seguridad
+
+### **1. Herencia de Roles**
+- **Problema**: Owner en suscripción otorga Owner en todos los RGs
+- **Solución**: Detectar herencia antes de crear PIM redundante
+- **Beneficio**: Evita "shadowing" de permisos
+
+### **2. Roles Custom**
+- **Riesgo**: Nombres pueden cambiar, GUIDs son permanentes
+- **Solución**: Siempre usar `RoleDefinitionId`
+- **Validación**: Script verifica que GUID existe antes de crear eligibilidad
+
+### **3. AutoMigrate**
+- **Riesgo**: Remoción automática de permanentes puede causar downtime
+- **Mitigación**: 
+  1. Siempre ejecutar Dry-Run primero
+  2. Notificar a usuarios afectados
+  3. Programar en ventana de mantenimiento
+  4. Tener rollback plan
+
+---
+
+## 📈 Auditoría Mejorada
+
+El nuevo script registra:
+
+```json
+{
+  "Timestamp": "2025-10-29T10:30:00.000Z",
+  "PrincipalId": "00000000-0000-0000-0000-000000000001",
+  "RoleOrGroup": "Owner",
+  "Scope": "/subscriptions/xxx/resourceGroups/rg-prod",
+  "Action": "AzureMigrated",
+  "Status": "Success",
+  "Details": "Creada eligibilidad y removidos 2 permanentes",
+  "RequestId": "abc-123-def",
+  "AutoMigrate": true,
+  "InheritedConflicts": [
+    {
+      "Scope": "/subscriptions/xxx",
+      "IsInherited": true
+    }
+  ]
+}
+```
+
+---
+
+## ✅ Checklist Actualizado
+
+Antes de ejecutar con las correcciones:
+
+- [ ] Ejecutar `Get-RoleGUIDs.ps1` para obtener GUIDs
+- [ ] Actualizar `$script:AllowedAzureRoles` con GUIDs (no nombres)
+- [ ] CSV usa columna `AzureRoleDefinitionId` (GUID)
+- [ ] Validar que GUIDs existen en el tenant: `Get-AzRoleDefinition -Id "xxx"`
+- [ ] Para custom roles, agregar a lista blanca explícitamente
+- [ ] Ejecutar Dry-Run sin AutoMigrate primero
+- [ ] Revisar conflictos heredados en output
+- [ ] Si hay conflictos, decidir si usar AutoMigrate
+- [ ] Ejecutar Dry-Run con AutoMigrate para simular
+- [ ] Notificar usuarios afectados si se removerán permanentes
+- [ ] Ejecutar en producción en ventana de mantenimiento
+
+---
+
+## 🆘 Troubleshooting Actualizado
+
+### **Error: "RoleDefinitionId 'xxx' no está en lista blanca"**
+
+```powershell
+# Verificar que el GUID existe
+Get-AzRoleDefinition -Id "xxx"
+
+# Si es custom role, agregar a lista blanca:
+$script:AllowedAzureRoles.Tier1['xxx'] = @{ 
+    Name = 'Mi Rol Custom'
+    MaxDuration = 'P7D'
+    RequiresApproval = $true 
+}
+```
+
+### **Warning: "Conflicto heredado desde ancestro"**
+
+**Causa**: Asignación permanente en scope superior.
+
+**Soluciones**:
+1. Usar `-AutoMigrate` para remover automáticamente
+2. Remover manualmente el permanente del ancestro
+3. Ajustar scope solicitado para evitar redundancia
+
+```powershell
+# Ejemplo: En lugar de RG, dar en recurso específico
+# Antes: /subscriptions/xxx/resourceGroups/rg-app
+# Después: /subscriptions/xxx/resourceGroups/rg-app/providers/Microsoft.Web/sites/webapp-01
+```
+
+---
+
+## 📚 Referencias Actualizadas
+
+- [Azure Role Definitions by ID](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles)
+- [PIM for Azure Resources - Best Practices](https://learn.microsoft.com/en-us/azure/active-directory/privileged-identity-management/pim-resource-roles-configure-role-settings)
+- [Understanding Azure RBAC Scope](https://learn.microsoft.com/en-us/azure/role-based-access-control/scope-overview)
