@@ -1,0 +1,476 @@
+# Guía Completa - Formatos de CSV para PIM
+
+## 📋 Tabla de Contenidos
+
+1. [Estructura Base Requerida](#estructura-base)
+2. [Tipo 1: Roles de Entra ID](#tipo-1-roles-entra-id)
+3. [Tipo 2: Roles de Azure RBAC](#tipo-2-roles-azure-rbac)
+4. [Tipo 3: Grupos PIM](#tipo-3-grupos-pim)
+5. [Tipo 4: Mixto (Múltiples Tipos)](#tipo-4-mixto)
+6. [Validación de Datos](#validación-de-datos)
+7. [Ejemplos Completos](#ejemplos-completos)
+
+---
+
+## 📊 Estructura Base Requerida {#estructura-base}
+
+### **Columnas Obligatorias (Para Todos los Tipos)**
+
+```csv
+PrincipalId,Reason,Duration
+```
+
+| Columna | Tipo | Descripción | Formato | Ejemplo |
+|---------|------|-------------|---------|---------|
+| `PrincipalId` | GUID | ID del usuario, grupo o service principal | GUID válido | `a1b2c3d4-1234-5678-9abc-def012345678` |
+| `Reason` | String | Justificación con ticket de cambio | Mínimo 5 caracteres | `CHG-12345: Deploy aplicación` |
+| `Duration` | ISO-8601 | Duración de la eligibilidad | Formato ISO-8601 | `PT8H`, `P1D`, `P30D` |
+
+### **Columnas Adicionales (Según Tipo)**
+
+Dependiendo del tipo de asignación, necesitas columnas adicionales:
+
+| Tipo de Asignación | Columnas Adicionales Requeridas |
+|-------------------|----------------------------------|
+| **Entra ID Role** | `RoleDefinitionId`, `DirectoryScopeId` |
+| **Azure RBAC Role** | `AzureRoleDefinitionId`, `AzureScope` |
+| **Grupo PIM** | `GroupId` |
+
+---
+
+## 🎯 Tipo 1: Roles de Entra ID (Azure AD) {#tipo-1-roles-entra-id}
+
+### **Columnas Requeridas**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+```
+
+Para roles de Entra ID, llenar:
+- ✅ `PrincipalId`
+- ✅ `RoleDefinitionId` - GUID del rol de Entra ID
+- ✅ `DirectoryScopeId` - Casi siempre `/` (directorio completo)
+- ❌ `AzureRoleDefinitionId` - Dejar vacío
+- ❌ `AzureScope` - Dejar vacío
+- ❌ `GroupId` - Dejar vacío
+- ✅ `Reason`
+- ✅ `Duration`
+
+### **Ejemplo CSV**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+a1b2c3d4-1234-5678-9abc-def012345678,62e90394-69f5-4237-9190-012177145e10,/,,,CHG-12345: Configuración emergencia,PT8H
+b2c3d4e5-2345-6789-abcd-ef0123456789,194ae4cb-b126-40b2-bd5b-6091b380977d,/,,,RITM-67890: Revisión políticas,PT8H
+c3d4e5f6-3456-789a-bcde-f01234567890,729827e3-9c14-49f7-bb1b-9608f156bbb8,/,,,TASK-11111: Soporte temporal,P7D
+```
+
+### **Roles de Entra ID Comunes**
+
+| Rol | RoleDefinitionId (GUID) | Tier | Duración Típica |
+|-----|------------------------|------|-----------------|
+| Global Administrator | `62e90394-69f5-4237-9190-012177145e10` | Tier0 | PT4H - PT8H |
+| Security Administrator | `194ae4cb-b126-40b2-bd5b-6091b380977d` | Tier0 | PT8H |
+| User Administrator | `fe930be7-5e62-47db-91af-98c3a49a38b1` | Tier1 | P1D |
+| SharePoint Administrator | `f28a1f50-f6e7-4571-818b-6a12f2af6b6c` | Tier1 | P1D |
+| Exchange Administrator | `29232cdf-9323-42fd-ade2-1d097af3e4de` | Tier1 | P1D |
+| Helpdesk Administrator | `729827e3-9c14-49f7-bb1b-9608f156bbb8` | Tier2 | P7D |
+| Directory Readers | `88d8e3e3-8f55-4a1e-953a-9b9898b8876b` | Tier2 | P30D |
+
+### **Cómo Obtener RoleDefinitionId**
+
+```powershell
+# Método 1: Extraer con el script
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -ExportRolesCsv
+
+# Método 2: Comando directo
+Get-MgDirectoryRoleTemplate | Where-Object { $_.DisplayName -like "*Administrator*" } |
+    Select-Object DisplayName, Id | Format-Table
+
+# Método 3: Buscar rol específico
+$role = Get-MgDirectoryRoleTemplate | Where-Object { $_.DisplayName -eq "Global Administrator" }
+Write-Host "RoleDefinitionId: $($role.Id)"
+```
+
+---
+
+## 🌐 Tipo 2: Roles de Azure RBAC {#tipo-2-roles-azure-rbac}
+
+### **Columnas Requeridas**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+```
+
+Para roles de Azure RBAC, llenar:
+- ✅ `PrincipalId`
+- ❌ `RoleDefinitionId` - Dejar vacío
+- ❌ `DirectoryScopeId` - Dejar vacío
+- ✅ `AzureRoleDefinitionId` - GUID del rol de Azure (NO el nombre)
+- ✅ `AzureScope` - Ruta completa ARM del scope
+- ❌ `GroupId` - Dejar vacío
+- ✅ `Reason`
+- ✅ `Duration`
+
+### **Ejemplo CSV - Nivel Suscripción**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+a1b2c3d4-1234-5678-9abc-def012345678,,,8e3af657-a8ff-443c-a75c-2fe8c4bcb635,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb,,CHG-22222: Owner temporal migración,PT4H
+b2c3d4e5-2345-6789-abcd-ef0123456789,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb,,DEPLOY-33333: Contributor para deployment,PT8H
+c3d4e5f6-3456-789a-bcde-f01234567890,,,acdd72a7-3385-48ef-bd42-f606fba81ae7,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb,,AUDIT-44444: Reader auditoría Q4,P30D
+```
+
+### **Ejemplo CSV - Nivel Resource Group**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+devops1@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/resourceGroups/rg-production,,PROD-DEPLOY-2025: Deploy apps producción,PT8H
+devops2@contoso.com,,,9980e02c-c2be-4d73-94e8-173b1dc7cf3c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/resourceGroups/rg-compute,,VM-MAINT-2025: Mantenimiento VMs,P1D
+qa-tester@contoso.com,,,acdd72a7-3385-48ef-bd42-f606fba81ae7,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/resourceGroups/rg-testing,,QA-ACCESS-2025: Testing environment,P30D
+```
+
+### **Ejemplo CSV - Nivel Recurso Específico**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+developer@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/resourceGroups/rg-apps/providers/Microsoft.Web/sites/webapp-prod,,HOTFIX-5555: Hotfix urgente webapp,PT12H
+dba@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/resourceGroups/rg-data/providers/Microsoft.Sql/servers/sql-prod,,DB-PATCH-6666: Patch base datos,PT4H
+```
+
+### **Roles de Azure RBAC Comunes**
+
+| Rol | AzureRoleDefinitionId (GUID) | Tier | Duración Típica |
+|-----|------------------------------|------|-----------------|
+| Owner | `8e3af657-a8ff-443c-a75c-2fe8c4bcb635` | Tier0 | PT4H |
+| User Access Administrator | `18d7d88d-d35e-4fb5-a5c3-7773c20a72d9` | Tier0 | PT4H |
+| Contributor | `b24988ac-6180-42a0-ab88-20f7382dd24c` | Tier1 | PT8H |
+| Reader | `acdd72a7-3385-48ef-bd42-f606fba81ae7` | Tier2 | P30D |
+| Virtual Machine Contributor | `9980e02c-c2be-4d73-94e8-173b1dc7cf3c` | Tier1 | P1D |
+| Storage Account Contributor | `17d1049b-9a84-46fb-8f53-869881c3d3ab` | Tier1 | P1D |
+| Network Contributor | `4d97b98b-1d4f-4787-a291-c67834d212e7` | Tier1 | P1D |
+| Security Admin | `fb1c8493-542b-48eb-b624-b4c8fea62acd` | Tier0 | PT8H |
+| Monitoring Reader | `43d0d8ad-25c7-4714-9337-8ba259a9fe05` | Tier2 | P30D |
+| Log Analytics Reader | `73c42c96-874c-492b-b04d-ab87d138a893` | Tier2 | P30D |
+
+### **Estructura de AzureScope**
+
+```
+# Nivel de Suscripción
+/subscriptions/{subscription-id}
+
+# Nivel de Resource Group
+/subscriptions/{subscription-id}/resourceGroups/{resource-group-name}
+
+# Nivel de Recurso (VM)
+/subscriptions/{subscription-id}/resourceGroups/{rg-name}/providers/Microsoft.Compute/virtualMachines/{vm-name}
+
+# Nivel de Recurso (Storage)
+/subscriptions/{subscription-id}/resourceGroups/{rg-name}/providers/Microsoft.Storage/storageAccounts/{storage-name}
+
+# Nivel de Recurso (Web App)
+/subscriptions/{subscription-id}/resourceGroups/{rg-name}/providers/Microsoft.Web/sites/{webapp-name}
+
+# Nivel de Recurso (SQL Database)
+/subscriptions/{subscription-id}/resourceGroups/{rg-name}/providers/Microsoft.Sql/servers/{server-name}/databases/{db-name}
+```
+
+### **Cómo Obtener AzureRoleDefinitionId**
+
+```powershell
+# Método 1: Extraer con el script
+.\PIM-SecureAssignment-ARM.ps1 -ExtractRoles -SupportAzureRBAC -ExportRolesCsv
+
+# Método 2: Comando directo
+Get-AzRoleDefinition | Where-Object { $_.Name -like "*Contributor*" } |
+    Select-Object Name, Id | Format-Table
+
+# Método 3: Buscar rol específico por nombre
+$role = Get-AzRoleDefinition -Name "Contributor"
+Write-Host "AzureRoleDefinitionId: $($role.Id)"
+
+# Método 4: Listar roles custom
+Get-AzRoleDefinition | Where-Object { $_.IsCustom -eq $true } |
+    Select-Object Name, Id, Description | Format-Table
+```
+
+### **Cómo Obtener AzureScope**
+
+```powershell
+# Obtener ID de suscripción actual
+$sub = Get-AzContext
+Write-Host "Scope suscripción: /subscriptions/$($sub.Subscription.Id)"
+
+# Obtener scope de un resource group
+$rg = Get-AzResourceGroup -Name "rg-production"
+Write-Host "Scope RG: $($rg.ResourceId)"
+
+# Obtener scope de una VM específica
+$vm = Get-AzVM -ResourceGroupName "rg-compute" -Name "vm-web-01"
+Write-Host "Scope VM: $($vm.Id)"
+
+# Obtener scope de un storage account
+$storage = Get-AzStorageAccount -ResourceGroupName "rg-data" -Name "stdatalake01"
+Write-Host "Scope Storage: $($storage.Id)"
+
+# Listar todos los resource groups en formato CSV
+Get-AzResourceGroup | Select-Object ResourceGroupName, 
+    @{N='Scope';E={$_.ResourceId}} | 
+    Export-Csv "resource_groups_scopes.csv"
+```
+
+---
+
+## 👥 Tipo 3: Grupos PIM {#tipo-3-grupos-pim}
+
+### **Columnas Requeridas**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+```
+
+Para grupos PIM, llenar:
+- ✅ `PrincipalId`
+- ❌ `RoleDefinitionId` - Dejar vacío
+- ❌ `DirectoryScopeId` - Dejar vacío
+- ❌ `AzureRoleDefinitionId` - Dejar vacío
+- ❌ `AzureScope` - Dejar vacío
+- ✅ `GroupId` - GUID del grupo habilitado para PIM
+- ✅ `Reason`
+- ✅ `Duration`
+
+### **Ejemplo CSV**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+a1b2c3d4-1234-5678-9abc-def012345678,,,,,11111111-1111-1111-1111-111111111111,ONBOARD-2025: Membresía grupo administradores,P30D
+b2c3d4e5-2345-6789-abcd-ef0123456789,,,,,22222222-2222-2222-2222-222222222222,PROJECT-X: Acceso temporal proyecto,P90D
+c3d4e5f6-3456-789a-bcde-f01234567890,,,,,33333333-3333-3333-3333-333333333333,TEAM-DEVOPS: Membresía equipo DevOps,P180D
+```
+
+### **Requisitos para Grupos PIM**
+
+⚠️ **Importante**: El grupo DEBE estar habilitado para PIM antes de usarlo.
+
+**Verificar si un grupo está habilitado para PIM:**
+
+```powershell
+# Listar grupos habilitados para PIM
+Get-MgIdentityGovernancePrivilegedAccessGroup | 
+    Select-Object Id, DisplayName | 
+    Format-Table
+
+# Verificar grupo específico
+$groupId = "11111111-1111-1111-1111-111111111111"
+$pimGroup = Get-MgIdentityGovernancePrivilegedAccessGroup -PrivilegedAccessGroupId $groupId -ErrorAction SilentlyContinue
+
+if ($pimGroup) {
+    Write-Host "✓ Grupo habilitado para PIM" -ForegroundColor Green
+} else {
+    Write-Host "✗ Grupo NO habilitado para PIM" -ForegroundColor Red
+}
+```
+
+### **Cómo Obtener GroupId**
+
+```powershell
+# Método 1: Buscar por nombre
+$group = Get-MgGroup -Filter "displayName eq 'PIM-Administrators'"
+Write-Host "GroupId: $($group.Id)"
+
+# Método 2: Listar grupos que empiecen con "PIM-"
+Get-MgGroup -Filter "startswith(displayName, 'PIM-')" | 
+    Select-Object DisplayName, Id | 
+    Format-Table
+
+# Método 3: Exportar todos los grupos PIM a CSV
+Get-MgIdentityGovernancePrivilegedAccessGroup | ForEach-Object {
+    $group = Get-MgGroup -GroupId $_.Id
+    [PSCustomObject]@{
+        DisplayName = $group.DisplayName
+        GroupId = $group.Id
+        Description = $group.Description
+    }
+} | Export-Csv "pim_groups.csv" -NoTypeInformation
+```
+
+---
+
+## 🎨 Tipo 4: CSV Mixto (Múltiples Tipos) {#tipo-4-mixto}
+
+Puedes combinar **todos los tipos** en un solo CSV:
+
+### **Ejemplo CSV Completo**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+# === ROLES ENTRA ID ===
+user1@contoso.com,62e90394-69f5-4237-9190-012177145e10,/,,,CHG-001: Global Admin temporal,PT8H
+user2@contoso.com,194ae4cb-b126-40b2-bd5b-6091b380977d,/,,,RITM-002: Security review,PT8H
+
+# === ROLES AZURE - SUSCRIPCIÓN PRODUCCIÓN ===
+devops1@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb,,DEPLOY-003: Contributor producción,PT8H
+devops2@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb,,DEPLOY-003: Contributor producción,PT8H
+
+# === ROLES AZURE - SUSCRIPCIÓN DESARROLLO ===
+dev1@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/bbbbbbbb-2222-3333-4444-cccccccccccc,,DEV-004: Full dev access,P30D
+dev2@contoso.com,,,acdd72a7-3385-48ef-bd42-f606fba81ae7,/subscriptions/bbbbbbbb-2222-3333-4444-cccccccccccc,,DEV-005: Reader dev environment,P30D
+
+# === ROLES AZURE - RESOURCE GROUP ESPECÍFICO ===
+specialist@contoso.com,,,9980e02c-c2be-4d73-94e8-173b1dc7cf3c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/resourceGroups/rg-compute,,VM-006: VM management,P7D
+
+# === GRUPOS PIM ===
+contractor1@external.com,,,,,11111111-1111-1111-1111-111111111111,CONTRACT-007: External contractor,P90D
+contractor2@external.com,,,,,11111111-1111-1111-1111-111111111111,CONTRACT-007: External contractor,P90D
+
+# === MISMO USUARIO - MÚLTIPLES ASIGNACIONES ===
+architect@contoso.com,fe930be7-5e62-47db-91af-98c3a49a38b1,/,,,PROJECT-008: User Admin Entra ID,P1D
+architect@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/resourceGroups/rg-project,,PROJECT-008: Contributor en proyecto,P1D
+architect@contoso.com,,,,,22222222-2222-2222-2222-222222222222,PROJECT-008: Grupo arquitectos,P1D
+```
+
+---
+
+## ✅ Validación de Datos {#validación-de-datos}
+
+### **Validaciones Automáticas del Script**
+
+El script valida automáticamente:
+
+1. ✅ **PrincipalId** es GUID válido
+2. ✅ **RoleDefinitionId** es GUID válido (si presente)
+3. ✅ **AzureRoleDefinitionId** es GUID válido (si presente)
+4. ✅ **GroupId** es GUID válido (si presente)
+5. ✅ **Duration** formato ISO-8601 válido
+6. ✅ **Reason** mínimo 5 caracteres
+7. ✅ Rol está en lista blanca
+8. ✅ Duración no excede límites por Tier
+
+### **Script de Validación Pre-Ejecución**
+
+```powershell
+<#
+.SYNOPSIS
+    Valida CSV antes de ejecutar el script principal
+#>
+param([string]$CsvPath)
+
+$csv = Import-Csv $CsvPath
+$errors = @()
+$warnings = @()
+
+Write-Host "Validando CSV: $CsvPath" -ForegroundColor Cyan
+Write-Host "Filas a validar: $($csv.Count)" -ForegroundColor White
+
+foreach ($row in $csv) {
+    $rowIndex = $csv.IndexOf($row) + 2  # +2 por header y index base-0
+    
+    # Validar PrincipalId
+    try {
+        [System.Guid]::Parse($row.PrincipalId) | Out-Null
+    }
+    catch {
+        $errors += "Fila $rowIndex: PrincipalId inválido '$($row.PrincipalId)'"
+    }
+    
+    # Validar que tiene al menos un tipo de asignación
+    $hasEntraRole = ($row.RoleDefinitionId -and $row.DirectoryScopeId)
+    $hasAzureRole = ($row.AzureRoleDefinitionId -and $row.AzureScope)
+    $hasGroup = $row.GroupId
+    
+    if (-not ($hasEntraRole -or $hasAzureRole -or $hasGroup)) {
+        $errors += "Fila $rowIndex: Sin tipo de asignación válido"
+    }
+    
+    # Validar GUIDs adicionales
+    if ($row.RoleDefinitionId) {
+        try { [System.Guid]::Parse($row.RoleDefinitionId) | Out-Null }
+        catch { $errors += "Fila $rowIndex: RoleDefinitionId inválido" }
+    }
+    
+    if ($row.AzureRoleDefinitionId) {
+        try { [System.Guid]::Parse($row.AzureRoleDefinitionId) | Out-Null }
+        catch { $errors += "Fila $rowIndex: AzureRoleDefinitionId inválido" }
+    }
+    
+    if ($row.GroupId) {
+        try { [System.Guid]::Parse($row.GroupId) | Out-Null }
+        catch { $errors += "Fila $rowIndex: GroupId inválido" }
+    }
+    
+    # Validar Duration
+    if ($row.Duration -notmatch '^P(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?$') {
+        $errors += "Fila $rowIndex: Duration formato ISO-8601 inválido '$($row.Duration)'"
+    }
+    
+    # Validar Reason
+    if ($row.Reason.Length -lt 5) {
+        $warnings += "Fila $rowIndex: Justificación muy corta (menos de 5 caracteres)"
+    }
+    
+    # Validar AzureScope formato
+    if ($row.AzureScope -and $row.AzureScope -notmatch '^/subscriptions/') {
+        $errors += "Fila $rowIndex: AzureScope debe iniciar con '/subscriptions/'"
+    }
+}
+
+# Reporte
+Write-Host "`n=== RESULTADO VALIDACIÓN ===" -ForegroundColor Cyan
+
+if ($errors.Count -eq 0) {
+    Write-Host "✓ Sin errores críticos" -ForegroundColor Green
+} else {
+    Write-Host "✗ $($errors.Count) errores encontrados:" -ForegroundColor Red
+    $errors | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+}
+
+if ($warnings.Count -gt 0) {
+    Write-Host "⚠ $($warnings.Count) advertencias:" -ForegroundColor Yellow
+    $warnings | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+}
+
+if ($errors.Count -eq 0) {
+    Write-Host "`n✓ CSV válido. Listo para ejecutar." -ForegroundColor Green
+} else {
+    Write-Host "`n✗ Corregir errores antes de ejecutar." -ForegroundColor Red
+}
+```
+
+---
+
+## 📚 Ejemplos Completos por Escenario {#ejemplos-completos}
+
+### **Escenario 1: Onboarding Team DevOps**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+# DevOps Team - 5 miembros
+# Contributor en Dev + Reader en Prod
+devops1@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/dev-sub-id,,ONBOARD-DEVOPS-2025: Dev access,P90D
+devops1@contoso.com,,,acdd72a7-3385-48ef-bd42-f606fba81ae7,/subscriptions/prod-sub-id,,ONBOARD-DEVOPS-2025: Prod readonly,P90D
+devops2@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/dev-sub-id,,ONBOARD-DEVOPS-2025: Dev access,P90D
+devops2@contoso.com,,,acdd72a7-3385-48ef-bd42-f606fba81ae7,/subscriptions/prod-sub-id,,ONBOARD-DEVOPS-2025: Prod readonly,P90D
+# ... repetir para devops3, devops4, devops5
+```
+
+### **Escenario 2: Migración Global Admins a PIM**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+admin1@contoso.com,62e90394-69f5-4237-9190-012177145e10,/,,,MIGRATION-GLOBAL-ADMINS-2025: PIM conversion,PT8H
+admin2@contoso.com,62e90394-69f5-4237-9190-012177145e10,/,,,MIGRATION-GLOBAL-ADMINS-2025: PIM conversion,PT8H
+admin3@contoso.com,62e90394-69f5-4237-9190-012177145e10,/,,,MIGRATION-GLOBAL-ADMINS-2025: PIM conversion,PT8H
+admin4@contoso.com,62e90394-69f5-4237-9190-012177145e10,/,,,MIGRATION-GLOBAL-ADMINS-2025: PIM conversion,PT8H
+emergencybreak@contoso.com,62e90394-69f5-4237-9190-012177145e10,/,,,MIGRATION-GLOBAL-ADMINS-2025: Break glass account,PT4H
+```
+
+### **Escenario 3: Proyecto Temporal Multi-Recurso**
+
+```csv
+PrincipalId,RoleDefinitionId,DirectoryScopeId,AzureRoleDefinitionId,AzureScope,GroupId,Reason,Duration
+# Proyecto Alpha - 60 días
+# Arquitecto: múltiples roles
+architect@contoso.com,fe930be7-5e62-47db-91af-98c3a49a38b1,/,,,PROJECT-ALPHA-2025: User management,P60D
+architect@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/xxx/resourceGroups/rg-project-alpha,,PROJECT-ALPHA-2025: Full RG access,P60D
+# Developers: solo RG
+dev1@contoso.com,,,b24988ac-6180-42a0-ab88-20f7382dd24c,/subscriptions/xxx/resourceGroups/rg-project-alpha,,PROJECT-ALPHA-2025: Development,P60D
