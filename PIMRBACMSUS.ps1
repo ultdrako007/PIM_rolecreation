@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Script PIM con soporte completo Azure RBAC - VERSIiìN CORREGIDA
+    Script PIM con soporte completo Azure RBAC - VERSION CORREGIDA EFP
     
 .DESCRIPTION
     Mejoras implementadas:
@@ -1925,20 +1925,17 @@ function Export-AuditReportExtended {
     Write-Log "‚úì Reporte CSV: $csvFile" -Level Success
     
     $jsonFile = "PIM_Audit_${shortHash}_${timestamp}.json"
+    
+    $executionTime = Get-Date -Format "yyyy-MM-ddTHH:mm:ss.fffZ"
+    $executedByUser = try { (Get-MgContext).Account } catch { "Unknown" }
+   
     $auditData = @{
-        Metadata = @{
-            CsvHash = $script:CsvHash
-            ConfigHash = $script:AllowedRolesConfigHash
-            Phase = $Phase
-            DryRun = $DryRun.IsPresent
-            AutoMigrate = $AutoMigrate.IsPresent
-            AzureRBACSupport = $SupportAzureRBAC.IsPresent
-            ExecutedBy = try { (Get-MgContext).Account } catch { "Unknown" }
-            ExecutedAt = Get-Date -Format "yyyy-MM-ddTHH:mm:ss.fffZ"
-        }
-        Statistics = $script:Statistics
-        Entries = $script:AuditLog
+       Metadata = @{
+           ExecutedBy = $executedByUser
+           ExecutedAt = $executionTime
+           }
     }
+
     $auditData | ConvertTo-Json -Depth 10 | Out-File $jsonFile -Encoding UTF8
     Write-Log "‚úì Reporte JSON: $jsonFile" -Level Success
     
@@ -2011,3 +2008,6 @@ finally {
 }
 
 #endregion
+
+
+
